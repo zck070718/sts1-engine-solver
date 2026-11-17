@@ -1083,12 +1083,27 @@ public final class Gameplay {
         try {
             List<String> diffs = sts1solver.mirror.SkeletonFingerprint.diff(
                     before, sts1solver.mirror.SkeletonFingerprint.capture());
-            if (diffs.isEmpty()) {
-                Log.info(phase + " search: spine state unchanged");
+            // B192 round 5: a search spans real frames, so the live animation clock advances on its
+            // own. Only a clock-only difference is live play, not a sandbox write; anything else
+            // (animation name, time scale, placement, pose, tint) is still a warning.
+            List<String> real = new java.util.ArrayList<String>();
+            int clockOnly = 0;
+            for (int i = 0; i < diffs.size(); i++) {
+                String d = diffs.get(i);
+                if (sts1solver.mirror.SkeletonFingerprint.clockOnly(d)) {
+                    ++clockOnly;
+                } else {
+                    real.add(d);
+                }
+            }
+            if (real.isEmpty()) {
+                Log.info(phase + " search: spine state unchanged"
+                        + (clockOnly == 0 ? ""
+                                : " (" + clockOnly + " animation clock(s) advanced by live frames)"));
                 return;
             }
-            Log.warn(phase + " search: SPINE STATE CHANGED by the search (" + diffs.size() + ") | "
-                    + firstName(diffs, 3));
+            Log.warn(phase + " search: SPINE STATE CHANGED by the search (" + real.size() + ") | "
+                    + firstName(real, 3));
         } catch (Throwable ignored) {
             // an audit must never break a search
         }

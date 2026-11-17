@@ -48,7 +48,12 @@ as a wrong optimal line.
    constructor, and records the 453 process-global fields that hold combat state.
 2. **Sandbox.** `World.install()` writes the copy into those static slots, so the engine's own code
    now operates on the copy; `uninstall()` writes the live values back. The live fight is never the
-   thing being simulated.
+   thing being simulated. A combat entity that **only a static field points at** (a mod's pet, a
+   static power) is not in the player/pile/monster graph, so `mirror/StaticEntities` walks that graph
+   before every capture and registers such a field as a clone root by rule (engine base type +
+   unreachable from the fight) — no mod class names are named anywhere. Two settings keys exist only
+   to correct a misjudgement: `mirrorEntityRoots=off` disables the rule, `mirrorEntityIgnore=`
+   (`owner#field,…`) skips single fields; both are logged when they fire.
 3. **Execute real code.** A step is `AbstractCard.use` / a potion / the End Turn button, driven
    through `GameActionManager` with a synthetic frame delta (and the room's per-frame object pump,
    without which drawing stalls). No card effect is written by this project.

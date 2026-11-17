@@ -32,6 +32,13 @@ public final class Digest {
     }
 
     public static String ofCurrent() {
+        // B192 round 2: own the live mod statics BEFORE the digest is taken. The quick-search
+        // pre-check compares this digest against one taken after the capture; when the capture
+        // registers a new dynamic root (a pet field that was null a moment ago, say) the sc= line
+        // appeared only on the second read and the search aborted with "LIVE STATE CHANGED" --
+        // a false alarm caused by our own bookkeeping. Syncing here makes both reads see the same
+        // root set. sync() is a no-op inside a window, so this costs one reflective read pass.
+        StaticEntities.sync();
         StringBuilder sb = new StringBuilder(256);
         try {
             GameActionManager gam = AbstractDungeon.actionManager;
@@ -78,6 +85,11 @@ public final class Digest {
                             .append(m.isDeadOrEscaped() ? 1 : 0);
                 }
             }
+            // B192: a battle entity owned through a STATIC (a mod's pet, a static power) is part of
+            // the position even though it hangs off no pile or monster list. One short segment per
+            // such root: "sc=Osty#1a2b3c4d" with the pet's HP/max/block/death flags folded in. Empty
+            // when no static root is owned, so a vanilla fight's digest is unchanged.
+            sb.append(StaticEntities.fingerprintLine());
         } catch (Throwable t) {
             sb.append(" | unreadable:").append(t.getClass().getSimpleName());
         }

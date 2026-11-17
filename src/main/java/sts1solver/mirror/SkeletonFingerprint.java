@@ -6,6 +6,7 @@ import java.util.List;
 
 import com.badlogic.gdx.graphics.Color;
 import com.esotericsoftware.spine.AnimationState;
+import com.esotericsoftware.spine.Bone;
 import com.esotericsoftware.spine.Skeleton;
 import com.megacrit.cardcrawl.characters.AbstractPlayer;
 import com.megacrit.cardcrawl.core.AbstractCreature;
@@ -59,18 +60,43 @@ public final class SkeletonFingerprint {
     }
 
     private static String line(String role, AbstractCreature c) {
+        // The clock comes first so a search-level diff can be stripped of it (see clockOnly): a
+        // live frame advancing the animation is not a sandbox write.
+        return role + " " + c.getClass().getSimpleName() + " t=" + trackTime(c) + " "
+                + spineSignature(c);
+    }
+
+    /** The animation clock of track 0, or "-". */
+    private static String trackTime(AbstractCreature c) {
+        try {
+            AnimationState state = c.state;
+            AnimationState.TrackEntry e = state == null ? null : state.getCurrent(0);
+            return e == null ? "-" : String.valueOf(e.getTime());
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    /**
+     * B192 round 5: the spine state WITHOUT the animation clock.
+     *
+     * <p>{@link LiveGuard} compares this across one install window (same tick, no rendered frame):
+     * the clock cannot legitimately move there, but it is also the one field a live frame moves, so
+     * leaving it out keeps the window measurement free of that false positive. Animation name, time
+     * scale, placement, flip, bone pose and tint are all in, because a simulated
+     * {@code setToSetupPose} or {@code state.apply} moves exactly those.
+     */
+    public static String spineSignature(AbstractCreature c) {
         StringBuilder b = new StringBuilder();
-        b.append(role).append(' ').append(c.getClass().getSimpleName());
         try {
             AnimationState state = c.state;
             if (state != null) {
                 AnimationState.TrackEntry e = state.getCurrent(0);
-                b.append(" anim=").append(e == null || e.getAnimation() == null
+                b.append("anim=").append(e == null || e.getAnimation() == null
                         ? "-" : e.getAnimation().getName());
-                b.append(" t=").append(e == null ? "-" : String.valueOf(e.getTime()));
                 b.append(" ts=").append(state.getTimeScale());
             } else {
-                b.append(" anim=- t=- ts=-");
+                b.append("anim=- ts=-");
             }
         } catch (Throwable t) {
             b.append(" anim=?");
@@ -78,13 +104,14 @@ public final class SkeletonFingerprint {
         try {
             Skeleton s = skeletonOf(c);
             if (s == null) {
-                b.append(" skel=-");
+                b.append(" skel=- pose=-");
             } else {
                 b.append(" skel=").append(s.getX()).append(',').append(s.getY())
-                        .append(" flip=").append(s.getFlipX()).append(',').append(s.getFlipY());
+                        .append(" flip=").append(s.getFlipX()).append(',').append(s.getFlipY())
+                        .append(" pose=").append(poseHash(s));
             }
         } catch (Throwable t) {
-            b.append(" skel=?");
+            b.append(" skel=? pose=?");
         }
         try {
             Color tint = c.tint == null ? null : c.tint.color;
@@ -94,6 +121,50 @@ public final class SkeletonFingerprint {
             b.append(" tint=?");
         }
         return b.toString();
+    }
+
+    /**
+     * Bone transforms in one hex number: the difference between "idle" and "setup pose" when the
+     * animation name and the skeleton's own placement happen to be identical.
+     */
+    public static String poseHash(Skeleton s) {
+        long h = 1469598103934665603L;
+        com.badlogic.gdx.utils.Array<Bone> bones = s.getBones();
+        if (bones != null) {
+            for (int i = 0; i < bones.size; i++) {
+                Bone b = bones.get(i);
+                if (b == null) {
+                    continue;
+                }
+                h = mix(h, Float.floatToIntBits(b.getX()));
+                h = mix(h, Float.floatToIntBits(b.getY()));
+                h = mix(h, Float.floatToIntBits(b.getRotation()));
+                h = mix(h, Float.floatToIntBits(b.getScaleX()));
+                h = mix(h, Float.floatToIntBits(b.getScaleY()));
+            }
+        }
+        return String.format(java.util.Locale.ROOT, "%08x",
+                Integer.valueOf((int) (h ^ (h >>> 32))));
+    }
+
+    private static long mix(long h, int v) {
+        h ^= v;
+        h *= 1099511628211L;
+        return h;
+    }
+
+    private static final java.util.regex.Pattern CLOCK =
+            java.util.regex.Pattern.compile(" t=[-+0-9.eE]+");
+
+    /** True when two lines differ only in the animation clock (a live frame, not a sandbox write). */
+    public static boolean clockOnly(String diff) {
+        int i = diff.indexOf(" -> ");
+        if (i < 0) {
+            return false;
+        }
+        String a = CLOCK.matcher(diff.substring(0, i)).replaceAll(" t=#");
+        String b = CLOCK.matcher(diff.substring(i + 4)).replaceAll(" t=#");
+        return a.equals(b);
     }
 
     private static Skeleton skeletonOf(AbstractCreature c) {

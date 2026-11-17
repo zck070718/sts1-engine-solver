@@ -291,6 +291,11 @@ public final class Statics {
         return false;
     }
 
+    /** B192: the run-time registrations, in registration order (a copy; callers must not edit). */
+    public static synchronized java.util.List<Spec> dynamicSpecs() {
+        return new java.util.ArrayList<Spec>(dynamicSpecs);
+    }
+
     /** B109: how many run-time registrations are live. */
     public static synchronized int dynamicCount() {
         return dynamicSpecs.size();
@@ -541,6 +546,21 @@ public final class Statics {
     public static String report() {
         specs();
         return report;
+    }
+
+    /**
+     * B192 round 5: true when the mirror owns this field as a dynamically registered CLONE root.
+     * StaticWatch must not treat such a field as live-shared: the value it sees during a window is
+     * the mirror's own clone, so "the sandbox wrote it" is the install, not a leak.
+     */
+    public static synchronized boolean isDynamicClone(Field f) {
+        for (int i = 0; i < dynamicSpecs.size(); i++) {
+            Spec s = dynamicSpecs.get(i);
+            if (s.field == f) {
+                return s.kind == Kind.CLONE;
+            }
+        }
+        return false;
     }
 
     /** The roots, for the leak check to name what it is deliberately ignoring. */

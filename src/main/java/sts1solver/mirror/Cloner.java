@@ -238,6 +238,12 @@ public final class Cloner {
                     failures++;
                 }
             }
+            // B192 round 5: the spine fields were just copied as SHARED references (ClonePolicy
+            // keeps the whole com.esotericsoftware.spine package), so the clone would advance the
+            // live game's animation clock and pose. Give the clone its own before returning.
+            if (copy instanceof com.megacrit.cardcrawl.core.AbstractCreature) {
+                SpineIsolation.isolate((com.megacrit.cardcrawl.core.AbstractCreature) copy);
+            }
             return copy;
         }
         Plan plan = PLANS.get(c);
@@ -292,6 +298,9 @@ public final class Cloner {
                     Log.warn("clone: cannot copy " + c.getName() + "." + f.getName() + ": " + t);
                 }
             }
+        }
+        if (copy instanceof com.megacrit.cardcrawl.core.AbstractCreature) {
+            SpineIsolation.isolate((com.megacrit.cardcrawl.core.AbstractCreature) copy);
         }
         return copy;
     }

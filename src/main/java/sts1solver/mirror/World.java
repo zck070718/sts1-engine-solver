@@ -44,6 +44,10 @@ public final class World {
 
     /** Mirrors whatever the process-global statics currently hold (the live combat, normally). */
     public static World captureLive() {
+        // B192: register "battle entity that only statics point at" as a CLONE root BEFORE the spec
+        // array is taken, so this capture already owns it. No-op on every capture that changes
+        // nothing (one reflective read per mod object-static).
+        StaticEntities.sync();
         Statics.Spec[] specs = Statics.specs();
         World w = new World(specs);
         Cloner cloner = new Cloner();
@@ -58,7 +62,7 @@ public final class World {
                     w.cells[i] = cloner.copy(v);
                     break;
                 case CONTAINER:
-                    w.cells[i] = copyContainer(v);
+                    w.cells[i] = copyContainer(cloner, v);
                     break;
                 case MUTABLE_CONTAINER:
                     // A static final list: the reference cannot change, so the ELEMENTS have to be
@@ -132,7 +136,7 @@ public final class World {
                     break;
                 case CONTAINER:
                     long tk = System.nanoTime();
-                    w.cells[i] = copyContainer(v);
+                    w.cells[i] = copyContainer(cloner, v);
                     tContainer += System.nanoTime() - tk;
                     break;
                 case MUTABLE_CONTAINER:
@@ -230,6 +234,10 @@ public final class World {
         // player object is gone from the statics.
         com.megacrit.cardcrawl.characters.AbstractPlayer livePlayer =
                 com.megacrit.cardcrawl.dungeons.AbstractDungeon.player;
+        // B192 round 3: remember what the LIVE player/monsters/dynamic roots look like before this
+        // window swaps anything in; uninstall() compares them (see LiveGuard). A window is allowed
+        // to change its clones, not these objects -- a difference here is a real write to the game.
+        LiveGuard.capture();
         live = new Object[specs.length];
         liveColors = new float[specs.length][];
         livePrefData = new Object[specs.length];
@@ -374,6 +382,9 @@ public final class World {
         // the live player's save target stayed redirected into preferences\sts1solver-sandbox, so the
         // game's own save landed there and the real file stayed stale.
         try {
+        // B192 round 3: before anything is put back. StaticWatch's repair below would otherwise
+        // mask exactly the write we are looking for.
+        LiveGuard.verify();
         if (failNextUninstall) {
             failNextUninstall = false;
             throw new RuntimeException("B110 gate: uninstall interrupted on purpose");
@@ -669,6 +680,50 @@ public final class World {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * B192: the CONTAINER copy used by capture and fork. Same shape as
+     * {@link #copyContainer(Object)}, except that an element which is a battle entity (a card, a
+     * monster, a power, a relic, a potion, an orb) is copied through the pass's own {@link Cloner}.
+     * A shallow copy left those elements live-shared: a static list of taken cards or of pets was
+     * one more way for a simulated write to land in the real game. Identity with the cloned hand /
+     * pile / monster set is preserved because it is the same Cloner instance.
+     *
+     * <p>Non-entity elements stay shared on purpose: strings, ids, textures and mod singletons must
+     * keep their identity, and {@link ClonePolicy} decides the rest inside {@code copy}.
+     */
+    @SuppressWarnings("unchecked")
+    private static Object copyContainer(Cloner cloner, Object v) {
+        if (v instanceof List) {
+            List<?> src = (List<?>) v;
+            ArrayList<Object> out = new ArrayList<Object>(src.size());
+            for (int i = 0; i < src.size(); i++) {
+                out.add(element(cloner, src.get(i)));
+            }
+            return out;
+        }
+        if (v instanceof java.util.Set) {
+            java.util.Set<?> src = (java.util.Set<?>) v;
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<Object>();
+            for (Object o : src) {
+                out.add(element(cloner, o));
+            }
+            return out;
+        }
+        if (v instanceof Map) {
+            Map<?, ?> src = (Map<?, ?>) v;
+            HashMap<Object, Object> out = new HashMap<Object, Object>();
+            for (Map.Entry<?, ?> e : src.entrySet()) {
+                out.put(e.getKey(), element(cloner, e.getValue()));
+            }
+            return out;
+        }
+        return v;
+    }
+
+    private static Object element(Cloner cloner, Object e) {
+        return StaticEntities.isBattleEntity(e) ? cloner.copy(e) : e;
+    }
 
     private static Object copyContainer(Object v) {
         if (v instanceof List) {

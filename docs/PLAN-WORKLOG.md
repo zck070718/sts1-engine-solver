@@ -2775,3 +2775,74 @@ offers [Defend_G, Malaise], the plan chose [催化剂]…)`，看着像 mod 出�
 | 影响面 | 纯面板/日志文案；搜索、评分、Digest、live 匹配顺序不变；空答案解析仍写「不选 → 确定」 |
 | 门禁 | 未跑（m00732 自测 + m00778 减少测试） |
 | 安装物 | `mod/sts1-engine-solver.jar` 1,297,615 bytes / sha256 `39BF1B640A378B4F652348FF8C8C233C9A36E45FCD5CE54F8EC17702829CA82E`（BUILD OK + INSTALL OK） |
+
+## B192 / 隔离 mod 静态对象引用 亡灵契约师计算后实机奥斯提血量增加（2026-11-17；已实现并 build，install 待重跑，未跑门禁）
+
+| 项 | 内容 |
+| --- | --- |
+| 用户口径（m00005） | 「sts1-engine-solve最新日志亡灵契约师计算时沙盒没有正确隔离导致计算后奥斯提血量增加，给我一个计划修复这个bug以及类似bug。」——只要计划 |
+| 用户决策（m00273） | 「不要特判因为奥斯提不是原版角色，有没有不特判的方案」⇒ 方案改为「引擎战斗基类 + 世界图可达性」通用判定，代码与文档均不出现 mod 类名表 |
+| 旧行为 | 点「计算」后实机 Osty 血量/上限变高；求解器日志里没有 Osty 血量行；`static watch: the sandbox wrote mod static` 从未出现 |
+| 根因 | ①`ModStatics.java:29-32` 只镜像标量，`OstyManager.osty` 这类静态活体按设计不镜像；②`StaticWatch.java:240` 浅快照 `fs.size() < 32` 在父类第 25 个字段（`hb_w`）截断，`currentHealth/maxHealth` 永不入快照（7 个自声明字段 + 25 = 32）；③`Digest.java:34-80` 不含 Osty；④`World.fork` 对 `Kind.VALUE` 共享引用 ⇒ 同轮分叉互相污染 |
+| 克隆安全性 | jar 常量池 12 个类引用 `LTheNecrobinderMod/character/Osty;`，`javap -p` 后无任何类**声明** Osty 字段 ⇒ 替换静态即全局唯一克隆；`OstyManager.osty` 非 final 可还原 |
+| 修法（计划） | `docs/PLAN-MOD-OBJECTS.md` T1–T10（m00273 否掉特判）：新增 `mirror/StaticEntities`，按「引擎战斗基类实例 + 世界图不可达」动态注册 `Kind.CLONE`（零 mod 类名）；`copyContainer` 深拷容器中的战斗基类元素；`StaticWatch` 按名字收状态字段 + 战斗基类静态每窗口采样；`Digest` 加通用 `sc=<类简称>#<指纹>` |
+| 影响面 | 计算不再改实机 Osty 血量；Osty 参与战斗时路线更准；其它 mod 零开销、写保护只变严；面板/自动出牌/EPS 不变；不改 `Kind` 与 `World` 协议 |
+| 门禁 | **未计划新增**（m00732 自测 + m00300 不要门禁）。验收 G1–G6 见 PLAN-MOD-OBJECTS §2，由用户实机确认 |
+| 安装物 | `mod/sts1-engine-solver.jar` 1,307,167 bytes / sha256 `606FF30B773DF85D22FF4A1F20B7E1FD0CCBB6F72DA1640512E8DC7381414AA5`（BUILD OK + INSTALL OK；`install.ps1` 的锁探针在 DSH 沙箱里会把「访问被拒绝」误报成游戏在运行，需完整权限才装得上） |
+| 实施（m00356「改」） | ①新 `mirror/StaticEntities.java`（sync 由 `World.captureLive()` 首行调用；世界图遍历 depth≤8、对象≤20000；签名不变时 1 读/字段；`WALK_EVERY=512`）；②`Statics.dynamicSpecs()`；③`World.copyContainer(Cloner,Object)` 深拷战斗基类元素（capture/fork 用，readBack 仍浅拷）；④`Digest` 追加 `fingerprintLine()`（sc= 段，最多 4 个根，FNV-1a）；⑤`StaticWatch` 的 `Watch.entity` + 每窗口采样 + 按名字挑 32 字段（候选 96） |
+| settings 键 | `mirrorEntityRoots`（默认 auto；off/0/关 关闭，回到旧行为）、`mirrorEntityIgnore=owner#field,…`（默认空，只用于误判排除） |
+| 未做 / 偏差 | T1 证据文件（`evidence/` 不存在）、T8 的 `holders=N` 统计（只有 final 持有者告警）；快照上限仍 32 而非计划写的 128 |
+| 回滚 | 删 `World.captureLive()` 首行 `StaticEntities.sync()`；`copyContainer(cloner,…)`→`copyContainer(v)`；删 `Digest` 的 `fingerprintLine()` |
+### B192 第二轮：按声明类型接管 + digest 同侧（2026-11-17 13:20，用户 m00567）
+
+| 项 | 内容 |
+| --- | --- |
+| 用户口径（m00567） | 「显示局面已经变化不给计划。实际上沙盒模拟还是会改变实际游戏数据。我的要求是沙盒抓取数据不要改变游戏的实际数据，但是没有完成。」 |
+| 旧行为 | ①`solver.log:70-71` `static watch: the sandbox wrote mod static TheNecrobinderMod.OstyManager#osty … put back` —— 抓取时该字段没被接管，模拟里召唤才事后追回；②`solver.log:109` `LIVE STATE CHANGED` 且 `actual` 多出 `sc=DreamCatcher#…` —— 我们自己的指纹段造成的假警报 |
+| 根因 | ①`StaticEntities.walk` 只按当前值 `isBattleEntity(v)` 判，字段为 `null`（战斗刚开始，宠物未召唤）时直接跳过，从不按声明类型注册；②`sc=` 段依赖「动态根已注册」，而注册发生在 `captureLive()`，两次 digest 跨过注册点 |
+| 修法 | `walk` 改 `boolean byType = isBattleType(f.getType()); if (!byType && !isBattleEntity(v)) continue;`，null 也注册（`Cloner` 对 null 返回 null，零成本）；final 告警 null 安全；新增 `mirror entities: newly owned […]` 日志（≤8 条）；`Digest.ofCurrent()` 首行 `StaticEntities.sync()` |
+| 代价 | 每次 digest 多一遍静态字段反射读＋签名比对（签名不变+非 512 倍数时不算世界图，实测 walk 19ms）；新增根每叉多克隆（`FuneraryMask.c=8ms/1163x`、`SeanceAction.c=7ms/1163x`） |
+| 风险 | 按类型接管「当前 null、以后才填」的字段，若 mod 靠该静态字段当「本局已召唤」标志，沙盒内会各自独立；模板卡/遗物（DreamCatcher/NSoul/Necronomicon）被克隆后 `==` 比较可能不成立，必要时 `mirrorEntityIgnore` 排掉 |
+| 影响面 | 面板/自动出牌/EPS 不变；不再误报「局面已变化」；`PlanCache` 键随根集合换代一次；其它 mod 零开销 |
+| 门禁 | 不新增（m00732 自测、m00300 不要门禁），由用户实机确认 |
+| 安装物 | `mod/sts1-engine-solver.jar` 1,307,526 bytes / sha256 `53ABDBE5989D0AB50987350AAA95DD08CBD9D37D17F7F1663A21FB9DEEC90B70`（BUILD OK + INSTALL OK） |
+| 回滚 | `walk` 的 `byType` 判定改回只按值；删 `Digest.ofCurrent()` 首行 `sync()` |
+
+### B192 第三轮补记：LiveGuard 度量（2026-11-17 13:35，用户 m00661）
+
+| 项 | 内容 |
+| --- | --- |
+| 用户口径（m00661） | 「上一轮改完还是会变」——要求能**证明**实机有没有被改，而不是靠猜 |
+| 做法 | 新增 `src\main\java\sts1solver\mirror\LiveGuard.java`：`World.install()` 读完 `livePlayer`、换静态之前 `capture()` 实机 player、当前房间怪、`Statics.dynamicSpecs()` 中值为战斗基类的 `Kind.CLONE` 根；`World.uninstall()` 第一行（早于 `StaticWatch.beforeUninstall()` 还原）`verify()` 比对，变了打 `WARN live guard (B192): the window CHANGED N live object(s): <label> hp=1/.. -> hp=..`，未变每 60s 打 `INFO live guard (B192): N clean window(s)` |
+| 局限（第四轮已补） | 只覆盖「已注册的根＋player＋当前房间怪」，`OstyManager#osty` 没被注册 ⇒ 第三轮日志 `1 clean window(s)` 是**假阴性** |
+
+### B192 第四轮：宠物不是原版怪，判据换成 AbstractCreature（2026-11-17 13:40，用户 m00694）
+
+| 项 | 内容 |
+| --- | --- |
+| 用户口径（m00694） | 「最新测试奥斯提计算前血量1，计算后血量六十几了。问题出在哪」 |
+| 旧行为 | 第三轮日志 `solver.log:38/40` 的 8 个 newly owned 里没有 `OstyManager#osty`；`:78-79` 仍报 `wrote … OstyManager#osty (object) and the contents were put back`；`:45` `live guard … 1 clean window(s)`（假阴性） |
+| 根因 | ①实体判据只认 `AbstractMonster/AbstractPlayer/Power/Card/Relic/Potion/Orb`，`Osty extends AbstractCreature` 一个不中 ⇒ 从未注册；`javap` 实证 `OstyManager` 只有 `private static Osty osty`，`HealOstyAction.update()` 直接 `OstyManager.get().restore(amount)`；②`StaticWatch.snapshot` 按层级收集实例字段截断在 96 个，`Osty`(~30)+`AbstractCreature`(70+) 使 `currentHealth/maxHealth` 不进候选 ⇒ put back 覆盖不到 |
+| 修法 | ①`StaticEntities`：`isBattleEntity` 首条 `v instanceof AbstractCreature`，`isBattleType` 加 `AbstractCreature.class.isAssignableFrom(c) || hasHealthState(c)`，新增 `ClassValue<Boolean> HEALTH_STATE` + `scanHealthState`（非 static `int currentHealth` 与 `int maxHealth` 同时存在）；②`StaticWatch`：新增 `ClassValue<Field[]> INSTANCE_FIELDS` 全量收集整条继承链（缓存），快照「全量收集 → 按 `STATE_NAMES` 挑 32 → 补齐」；③`LiveGuard.capture()`：遍历 `ModStatics.watchCandidates()`，值 `instanceof AbstractCreature` 的静态字段以 `unowned static owner#field` 纳入比对 |
+| 代价 | 每次抓取/分叉多克隆一个宠物（spine `Skeleton/AnimationState` 在 `ClonePolicy` 共享）；`hasHealthState`/`INSTANCE_FIELDS` 每类型各一次反射（之后缓存）；`LiveGuard` 每 install 多约 395 次静态读 |
+| 风险 | 宠物克隆后 mod 内 `==` 身份比较会看到沙盒对象（隔离的正确语义）；`hasHealthState` 兜底可能多克隆「恰好同名血量字段」的非战斗对象（不写实机）；`LiveGuard` 只覆盖窗口内变化 |
+| 影响面 | 面板/自动出牌/EPS 不变；奥斯提血量现在参与沙盒状态与 `sc=` 指纹，路线评估用真实血量；实机 `OstyManager#osty` 引用与内部状态全程不被触碰 |
+| 门禁 | 不新增（m00732 自测、m00300 不要门禁） |
+| 安装物 | `mod/sts1-engine-solver.jar` 1,313,224 bytes / sha256 `EAAEA9C8CF7EB83B9798BE7DD77F4C1EA4878755F7CE5993CEB46B798EFACD0F`（BUILD OK 143 源文件 / 561 entries + INSTALL OK） |
+| 回滚 | 删 `isBattleEntity` 的 `AbstractCreature` 分支与 `hasHealthState` 兜底、`StaticWatch` 改回 96 格截断、删 `LiveGuard` 的 `watchCandidates()` 循环；或用 `mirrorEntityIgnore=TheNecrobinderMod.OstyManager#osty` |
+
+### B192 第五轮：spine 隔离（2026-11-17 13:33，用户 m00827）
+
+| 项 | 内容 |
+| --- | --- |
+| 用户口径（m00827） | 「动画没有隔离，其他都做好了。给我不要特判的修复方法」 |
+| 旧行为 | 13:32:28.004 `WARN quick search: SPINE STATE CHANGED by the search (2)`，两条差异只有 `t=` 变、增量≈搜索墙钟 ⇒ 搜索级审计误报；同时 `13:32:20.188` 仍报 `static watch: … OstyManager#osty … put back`（把我们自己的克隆当沙盒写入并回写实机引用） |
+| 根因 | `mirror/ClonePolicy.java:104-106` 把 `com.esotericsoftware.spine.` 整包按引用共享 ⇒ 克隆生物（含奥斯提）的 `skeleton`/`state` 与实机同对象；`javap -p -c TheNecrobinderMod.character.Osty` 实证有 `state.update/apply`、`skeleton.setToSetupPose/setPosition/setColor/setFlip/updateWorldTransform`、`stateData.setMix` ⇒ 模拟动画一被调用就写实机。本轮日志只是没调用到，不是结构保证 |
+| 修法 | ①新增 `mirror/SpineIsolation.java`：`isolate(AbstractCreature)` 把 `skeleton` 换成 `new Skeleton(live)`（引擎拷贝构造、逐根 Bone 深拷），`state` 换成 `new AnimationState(live.getData())` 并逐 track `setAnimation(i, e.getAnimation(), e.getLoop())`+`setTime`+`setTimeScale`，`stateData` 共享；②`Cloner.walk()` 两处 `return copy` 前按 `instanceof AbstractCreature` 调用（零 mod 类名）；③`SkeletonFingerprint` 新增 `spineSignature`（anim/ts/skel/flip/pose/tint，不含时钟）、`poseHash`（FNV-1a 混每根 Bone 位姿）、`clockOnly`；④`LiveGuard` 生物签名追加 `spineSignature`；⑤`Gameplay.noteSkeletonDiff` 剔除 clock-only 差异，全剔除记 INFO，真实变化仍 WARN；⑥`Statics.isDynamicClone(Field)` + `StaticWatch` 三处跳过动态克隆根；⑦settings `mirrorSpine`（默认 `copy`，`share/off/0/关` 回退） |
+| 代价 | 每 fork 每生物多一次 `new Skeleton` + `new AnimationState` + 每 track `setAnimation`；按 1852 fork、player+2~3 怪估：克隆段（`clone=644ms`）+3%~8%，整搜索（5.6s）+0.5%~1%；`poseHash` 只在 capture/verify 算，不进每节点热路径 |
+| 风险 | ①克隆体动画抓取瞬间定格（隔离正确语义），依赖动画时间的 mod 逻辑在模拟里看到恒定 `t`；②mod 若把 spine 对象另存到自己的静态字段仍共享（时钟被排除，只推进时钟的写不会点名）⇒ 已知边界；③新 `AnimationState` 不重放旧 state 上的 listener；④依赖游戏自带 `Skeleton(Skeleton)` 拷贝构造（已 javap 实证） |
+| 影响面 | 沙盒动画不再改实机姿态/时钟；面板、自动出牌、计划缓存键不变；`static watch` 不再对 `OstyManager#osty` 误报/回写 |
+| 门禁 | 不新增（m00732 自测、m00300 不要门禁） |
+| 安装物 | `mod/sts1-engine-solver.jar` 1,318,132 bytes / sha256 `FAD91E8DAEA532741A4C64CD8686ACF6D66B197FACF3881BD97BE108C15D9B0E`（BUILD OK 144 源文件 / 562 entries + INSTALL OK） |
+| 回滚 | `settings.txt` 写 `mirrorSpine=share`（无需重编译）；或删 `Cloner` 两处 `SpineIsolation.isolate` 调用 |
+

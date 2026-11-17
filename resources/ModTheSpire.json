@@ -1,9 +1,9 @@
-{
+﻿{
   "modid": "sts1-engine-solver",
   "name": "STS1 Engine Solver",
   "author_list": ["DSH agent"],
   "description": "Combat solver for Slay the Spire 1: it mirrors the live combat engine into an isolated copy, runs the game's own card, relic, potion and monster code on that copy, and searches the real states. Nothing is re-modelled by hand, so there is no per-card table to keep in sync. Compatibility: works in theory with any mod that adds content (cards, relics, potions, characters, monsters, events) without changing how combat itself resolves.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "sts_version": "12-18-2022",
   "mts_version": "3.30.0",
   "dependencies": ["basemod"]

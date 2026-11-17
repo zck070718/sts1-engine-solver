@@ -66,10 +66,18 @@ public final class StaticWatch {
         /** Learned: the sandbox has written through this field at least once. */
         boolean dirty;
 
+        /**
+         * B192: the field's declared type is an engine battle entity (a pet, a power). Such a value
+         * is sampled EVERY window: its whole body is state (HP, block, death flags), so the usual
+         * "every 128th install" rule would let the leak run unseen for a whole search.
+         */
+        final boolean entity;
+
         Watch(Field f) {
             field = f;
             key = f.getDeclaringClass().getName() + '#' + f.getName();
             isFinal = Modifier.isFinal(f.getModifiers());
+            entity = StaticEntities.isBattleType(f.getType());
             try {
                 f.setAccessible(true);
             } catch (Throwable ignored) {
@@ -127,7 +135,10 @@ public final class StaticWatch {
         List<Watch> candidates = all();
         for (int i = 0; i < candidates.size(); i++) {
             Watch w = candidates.get(i);
-            if (!sample && !w.dirty) {
+            if (Statics.isDynamicClone(w.field)) {
+                continue;
+            }
+            if (!sample && !w.dirty && !w.entity) {
                 continue;
             }
             try {
@@ -149,6 +160,9 @@ public final class StaticWatch {
         for (Map.Entry<Watch, Snap> e : snaps.entrySet()) {
             Watch w = e.getKey();
             Snap s = e.getValue();
+            if (Statics.isDynamicClone(w.field)) {
+                continue;
+            }
             try {
                 Object live = w.field.get(null);
                 if (live == s.staticValue && bodyEquals(live, s)) {
@@ -208,6 +222,35 @@ public final class StaticWatch {
 
     // ------------------------------------------------------------------ snapshot / compare / restore
 
+    /** Every non-static field of the class and its bases, resolved once per type. */
+    private static final ClassValue<Field[]> INSTANCE_FIELDS = new ClassValue<Field[]>() {
+        @Override
+        protected Field[] computeValue(Class<?> c) {
+            List<Field> all = new ArrayList<Field>();
+            for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
+                Field[] declared;
+                try {
+                    declared = k.getDeclaredFields();
+                } catch (Throwable t) {
+                    break;
+                }
+                for (int i = 0; i < declared.length; i++) {
+                    Field f = declared[i];
+                    if (Modifier.isStatic(f.getModifiers()) || f.isSynthetic()) {
+                        continue;
+                    }
+                    try {
+                        f.setAccessible(true);
+                        all.add(f);
+                    } catch (Throwable ignored) {
+                        // a field we cannot touch is simply not compared
+                    }
+                }
+            }
+            return all.toArray(new Field[0]);
+        }
+    };
+
     private static Snap snapshot(Watch w) throws Exception {
         Object v = w.field.get(null);
         if (v == null) {
@@ -235,23 +278,32 @@ public final class StaticWatch {
             return new Snap(v, 3, copy);
         }
         if (isPlainObject(c)) {
-            List<Field> fs = new ArrayList<Field>();
-            Class<?> k = c;
-            while (k != null && k != Object.class && fs.size() < 32) {
-                Field[] declared = k.getDeclaredFields();
-                for (int i = 0; i < declared.length && fs.size() < 32; i++) {
-                    Field f = declared[i];
-                    if (Modifier.isStatic(f.getModifiers()) || f.isSynthetic()) {
-                        continue;
-                    }
-                    try {
-                        f.setAccessible(true);
+            // B192 round 4: collect the WHOLE hierarchy before choosing. The old 96-field cap cut
+            // the walk off at the deepest class, so a pet's health fields (declared far down
+            // AbstractCreature's list) were never even seen by the name pass below -- the watch
+            // "restored" a handful of timer/texture fields and left the HP at whatever the sandbox
+            // wrote. Selection still caps at 32, collection no longer does.
+            Field[] all = INSTANCE_FIELDS.get(c);
+            // B192: state fields first, BY NAME and across the hierarchy. A mod pet's HP fields are
+            // declared in an abstract base class; plain declaration order buried them behind ~30
+            // texture/timer fields and the 32-field cap dropped them, which is why the watch could
+            // never see the pet move. Names first, then whatever fits as ordinary context.
+            List<Field> fs = new ArrayList<Field>(32);
+            Set<Field> picked = new HashSet<Field>();
+            for (int n = 0; n < StaticEntities.STATE_NAMES.length && fs.size() < 32; n++) {
+                String name = StaticEntities.STATE_NAMES[n];
+                for (int i = 0; i < all.length && fs.size() < 32; i++) {
+                    Field f = all[i];
+                    if (f.getName().equals(name) && picked.add(f)) {
                         fs.add(f);
-                    } catch (Throwable ignored) {
-                        // a field we cannot touch is simply not compared
                     }
                 }
-                k = k.getSuperclass();
+            }
+            for (int i = 0; i < all.length && fs.size() < 32; i++) {
+                Field f = all[i];
+                if (picked.add(f)) {
+                    fs.add(f);
+                }
             }
             Object[] vals = new Object[fs.size()];
             for (int i = 0; i < fs.size(); i++) {
@@ -500,6 +552,12 @@ public final class StaticWatch {
             if (owned.contains(key)) {
                 // The mirror already owns this one (MOD_CONTAINERS). Watching it would report the
                 // mirror's own restore as a sandbox write.
+                continue;
+            }
+            if (Statics.isDynamicClone(f)) {
+                // B192 round 5: a dynamic CLONE root holds the mirror's own clone inside a window,
+                // so neither its value nor its body is live state: watching it would report our
+                // install as a sandbox write and put the live reference back mid-window.
                 continue;
             }
             out.add(new Watch(f));
