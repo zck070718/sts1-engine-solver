@@ -2764,6 +2764,19 @@ offers [Defend_G, Malaise], the plan chose [催化剂]…)`，看着像 mod 出�
 | 创意工坊 | 条目 3839053516：`D:\mods-workshop\sts1-engine-solver\content\sts1-engine-solver.jar` 已换新，config.json 以 GBK/936 无 BOM 回写（description 当前版本 1.0.3 + changeNote），备份 `config.json.bak-20261117`；上传返回「Successfully updated workshop item!」 |
 | 门禁 | 未跑（用户 m00732 自测 / m00778 减少测试） |
 
+## 发布 1.0.4（2026-11-17）
+
+| 项 | 内容 |
+| --- | --- |
+| 内容 | B192 沙盒隔离收口：静态字段指向的战斗活体（宠物/静态 power，如 `TheNecrobinderMod.OstyManager#osty`）由 `StaticEntities` 按「引擎基类 + 世界图不可达」接管为克隆根，容器深拷；Spine 的 `Skeleton`/`AnimationState` 不再共享（`SpineIsolation`）；搜索后 spine 审计忽略只差动画时钟的行；`StaticWatch` 跳过动态克隆根 |
+| 版本 | `resources/ModTheSpire.json` 1.0.3 → 1.0.4；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行同步；工坊 `config.json` 的 description 版本行与 `changeNote` 同步 |
+| 构建 | `tools/build.ps1` BUILD OK（144 源文件、562 entries、1,318,141 B），sha256 `CF61068257F26711A0144EA0715601056264A7448CBC5847199E041B99F7D210` |
+| 实机 | `tools/install.ps1` INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`（源/目标哈希一致） |
+| GitHub | 提交 `54212e5` 已推送 master（19 个文件：8 个文档 + ModTheSpire.json + 10 个源文件，+1892/−34；新增 `PLAN-MOD-OBJECTS.md`、`StaticEntities.java`、`LiveGuard.java`、`SpineIsolation.java`） |
+| 创意工坊 | 条目 3839053516：`D:\mods-workshop\sts1-engine-solver\content\sts1-engine-solver.jar` 已换新（1,318,141 B，同 sha），config.json 以 GBK/936 无 BOM 回写（版本 1.0.4 + changeNote），备份 `config.json.bak-20261117c`；上传返回「Successfully updated workshop item!」 |
+| 门禁 | 未跑（用户 m00732 自测 / m00778 减少测试） |
+
+发布口径：本次不宣称动画问题「已实测修好」，只写隔离机制已生效；用户重启游戏后按 PLAN-BUGS B192 第五轮「验证」五条自查。
 ## B191 / P7-选牌 点击脚本印 id 而不是中文名（2026-11-17；未跑门禁，用户实测）
 
 | 项 | 内容 |
