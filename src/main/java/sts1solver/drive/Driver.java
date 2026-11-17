@@ -1968,7 +1968,15 @@ public final class Driver {
         out.add(option);
     }
 
-    /** Id plus upgrade level for every card in the list -- the dedupe key of {@link #addOption}. */
+    /**
+     * The state fingerprint of every card in the list -- the dedupe key of {@link #addOption}.
+     *
+     * <p>B200: this used to be id plus upgrade level, which merged copies that the game treats as
+     * different cards. With Snecko Eye two Strikes can cost 0 and 2; "discard this Strike" and
+     * "discard that Strike" lead to different turns, but they collapsed into one branch and the
+     * search kept whichever copy came first. Cards are compared by what they ARE ({@link
+     * sts1solver.mirror.CardPrint}), which is also the key the plan and both engines resolve by.
+     */
     private static String identityOf(java.util.List<AbstractCard> cards) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < cards.size(); i++) {
@@ -1976,7 +1984,7 @@ public final class Driver {
                 sb.append(',');
             }
             AbstractCard c = cards.get(i);
-            sb.append(c == null ? "?" : c.cardID + (c.timesUpgraded > 0 ? "+" + c.timesUpgraded : ""));
+            sb.append(c == null ? "?" : sts1solver.mirror.CardPrint.of(c));
         }
         return sb.toString();
     }
@@ -2257,7 +2265,8 @@ public final class Driver {
         // and the fight moved SuoKai" could not be told apart from "the plan said Strike and a
         // Strike was taken" -- the two need completely different fixes.
         Log.info("live selection: kind=" + selectionKind() + " offered=[" + brief(candidates, 10)
-                + "] picked=[" + namesOf(chosen) + "] plan=[" + cardIds + "]");
+                + "] picked=[" + namesOf(chosen) + "] state=[" + printsOf(chosen) + "] plan=["
+                + cardIds + "] planState=[" + (choicePrints == null ? "" : choicePrints) + "]");
         return answerLiveSelection(chosen, cardIds);
     }
 
@@ -2360,12 +2369,17 @@ public final class Driver {
     }
 
     /**
-     * The offered card a plan entry names: uuid (fork local) &gt; STATE FINGERPRINT (B98) &gt; id +
+     * The offered card a plan entry names: STATE FINGERPRINT (B98) &gt; uuid (fork local) &gt; id +
      * upgrade &gt; bare id &gt; bare name.
      *
-     * <p>The print pass sits right after the uuid pass and before the name passes on purpose: id and
-     * name both merge copies of one card, so they are only believed once no offered card carries the
-     * exact state the plan recorded.
+     * <p>The print pass sits FIRST on purpose (B200). The sandbox and the live game each resolve the
+     * plan against their own card objects, so the only key they can both be trusted with is the state
+     * the plan recorded. A uuid is fork local; when it happened to match, it silently overrode the
+     * print and the two sides could take DIFFERENT copies of one card (two copies whose prints are
+     * equal, e.g. two Strikes that Snecko rolled to the same cost). Taking copy #2 in the sandbox and
+     * copy #1 live reorders the hand, the discard pile and therefore the next shuffle, and the run
+     * diverges while every per-step counter still reads "rng same". Resolving by print first makes
+     * both sides apply the same rule and pick the same occurrence (the first one that matches).
      */
     private static AbstractCard matchOffered(java.util.List<AbstractCard> offered, boolean[] used,
                                              String id, String name, String uuid, String print) {
@@ -2375,12 +2389,12 @@ public final class Driver {
                 if (c == null || used != null && used[k]) {
                     continue;
                 }
-                if (pass == 0 && uuid != null && !uuid.isEmpty() && c.uuid != null
-                        && uuid.equals(c.uuid.toString())) {
+                if (pass == 0 && print != null && !print.isEmpty()
+                        && print.equals(sts1solver.mirror.CardPrint.of(c))) {
                     return c;
                 }
-                if (pass == 1 && print != null && !print.isEmpty()
-                        && print.equals(sts1solver.mirror.CardPrint.of(c))) {
+                if (pass == 1 && uuid != null && !uuid.isEmpty() && c.uuid != null
+                        && uuid.equals(c.uuid.toString())) {
                     return c;
                 }
                 if (pass == 2 && name != null && id != null && id.equals(c.cardID)
@@ -2432,16 +2446,53 @@ public final class Driver {
         String[] ids = cardIds.split(",");
         boolean[] used = new boolean[candidates.size()];
         for (int i = 0; i < ids.length; i++) {
+            // B200: when the plan recorded a STATE and the screen offers SEVERAL copies of that id,
+            // none of which carries it, there is no honest answer left. Falling through to "a card
+            // with that id" would silently take a different copy -- the two engines would then keep
+            // different hands, and the divergence only shows up turns later as a phantom cost. Refuse
+            // the whole answer instead; the callers already report "not-offered" and stop.
+            String want = nameAt(prints, i);
+            if (want != null && !want.isEmpty() && !carriesPrint(candidates, used, want)
+                    && countUnusedId(candidates, used, ids[i].trim()) > 1) {
+                Log.warn("selection: " + countUnusedId(candidates, used, ids[i].trim()) + " copies of "
+                        + ids[i].trim() + " on offer and none carries the planned state (" + want + ")");
+                return new java.util.ArrayList<AbstractCard>();
+            }
             // used[] keeps duplicate ids (a hand-select that discards two Strikes) honest: the same
             // physical card can be chosen once, never twice.
             AbstractCard pick = matchOffered(candidates, used, ids[i].trim(), nameAt(names, i),
-                    nameAt(uuids, i), nameAt(prints, i));
+                    nameAt(uuids, i), want);
             if (pick != null) {
                 used[candidates.indexOf(pick)] = true;
                 chosen.add(pick);
             }
         }
         return chosen;
+    }
+
+    /** Does an unused candidate carry exactly this state fingerprint? (B200) */
+    private static boolean carriesPrint(java.util.List<AbstractCard> candidates, boolean[] used,
+                                        String print) {
+        for (int k = 0; k < candidates.size(); k++) {
+            AbstractCard c = candidates.get(k);
+            if (c != null && (used == null || !used[k])
+                    && print.equals(sts1solver.mirror.CardPrint.of(c))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** How many still-available candidates carry this id -- 1 means the pick cannot be ambiguous. */
+    private static int countUnusedId(java.util.List<AbstractCard> candidates, boolean[] used, String id) {
+        int n = 0;
+        for (int k = 0; k < candidates.size(); k++) {
+            AbstractCard c = candidates.get(k);
+            if (c != null && (used == null || !used[k]) && c.cardID.equals(id)) {
+                ++n;
+            }
+        }
+        return n;
     }
 
     private static String nameAt(String[] names, int i) {
@@ -3279,7 +3330,10 @@ public final class Driver {
         java.util.List<AbstractCard> removed = new java.util.ArrayList<AbstractCard>();
         screen.selectedCards.group.clear();
         for (int i = 0; i < chosen.size() && screen.selectedCards.group.size() < want; i++) {
-            AbstractCard c = rebind(chosen.get(i), here);
+            // B200: ... the pool excludes what this fill already took (see fillGridSelection).
+            java.util.List<AbstractCard> pool =
+                    withoutIdentical(here, screen.selectedCards.group);
+            AbstractCard c = rebind(chosen.get(i), pool);
             if (c == null) {
                 continue;
             }
@@ -3356,12 +3410,42 @@ public final class Driver {
         int want = Math.max(1, gridSelectCount());
         java.util.List<AbstractCard> here = selectionCandidates();
         for (int i = 0; i < chosen.size() && screen.selectedCards.size() < want; i++) {
-            AbstractCard c = rebind(chosen.get(i), here);
+            // B200: rebind keys on state, so two print-identical copies would both resolve to the
+            // first one and a "take two Strikes" answer would pick one card twice. Cards this fill
+            // already took leave the pool, so the second pick gets the next copy.
+            java.util.List<AbstractCard> pool =
+                    withoutIdentical(here, screen.selectedCards);
+            AbstractCard c = rebind(chosen.get(i), pool);
             if (c != null) {
                 screen.selectedCards.add(c);
             }
         }
         return !screen.selectedCards.isEmpty();
+    }
+
+    /**
+     * {@code all} without the cards that appear in {@code taken}, compared BY REFERENCE.
+     *
+     * <p>Not {@code List.removeAll}: that goes through {@code equals}, and a mod card may override it
+     * (two different physical cards would then be treated as one).
+     */
+    private static java.util.List<AbstractCard> withoutIdentical(java.util.List<AbstractCard> all,
+                                                                 java.util.List<AbstractCard> taken) {
+        java.util.List<AbstractCard> out = new java.util.ArrayList<AbstractCard>(all.size());
+        for (int i = 0; i < all.size(); i++) {
+            AbstractCard c = all.get(i);
+            boolean skip = false;
+            for (int k = 0; k < taken.size(); k++) {
+                if (taken.get(k) == c) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip) {
+                out.add(c);
+            }
+        }
+        return out;
     }
 
     /**
@@ -3373,6 +3457,10 @@ public final class Driver {
      * by identity), so the card would stay in its pile and appear in two places at once. UUID
      * survives cloning, so it is the first key; id plus upgrade level is the fallback for a card the
      * screen recreated.
+     *
+     * <p>The state pass (B200) sits between them and uses the same rule as {@link
+     * #matchOffered}: a card is identified by what it IS, and two copies with one print are
+     * interchangeable, so the first occurrence wins on both sides.
      */
     private static AbstractCard rebind(AbstractCard wanted, java.util.List<AbstractCard> here) {
         if (wanted == null) {
@@ -3388,6 +3476,13 @@ public final class Driver {
                 return c;
             }
             if (!uuid.isEmpty() && uuid.equals(c.uuid.toString())) {
+                return c;
+            }
+        }
+        String print = sts1solver.mirror.CardPrint.of(wanted);
+        for (int i = 0; i < here.size(); i++) {
+            AbstractCard c = here.get(i);
+            if (c != null && print.equals(sts1solver.mirror.CardPrint.of(c))) {
                 return c;
             }
         }

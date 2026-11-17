@@ -2859,3 +2859,43 @@ offers [Defend_G, Malaise], the plan chose [催化剂]…)`，看着像 mod 出�
 | 安装物 | `mod/sts1-engine-solver.jar` 1,318,132 bytes / sha256 `FAD91E8DAEA532741A4C64CD8686ACF6D66B197FACF3881BD97BE108C15D9B0E`（BUILD OK 144 源文件 / 562 entries + INSTALL OK） |
 | 回滚 | `settings.txt` 写 `mirrorSpine=share`（无需重编译）；或删 `Cloner` 两处 `SpineIsolation.isolate` 调用 |
 
+
+---
+
+## B200 选牌身份统一（CardPrint 优先，user m00005，2026-11-18）
+
+**问题**：计算给出「5 回合无伤」，实机第 5 回合第二张打击出不起（计划要 0 费打击，手上 3 张打击都不带该状态）。
+
+**定位链**：第 9 步（生存者弃牌）首次偏离，两侧选牌前手牌同序、选后不同序；两侧 rng 计数全程相同 ⇒ 不是随机流；
+RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统计量**，与判定无关 ⇒ 不是蛇眼模拟错。
+真正的洞是**答案身份**：沙盒按 uuid（精确副本），实机 uuid 是 sandbox-local 只能按 id（同 id 取第一张），
+两张状态相同的打击被弃了不同副本 ⇒ 顺序分叉 ⇒ 洗牌后抽牌顺序不同 ⇒ 蛇眼费用落到别的牌上。
+
+**改动**（`drive/Driver.java`）：
+
+- `matchOffered`：print 提到 uuid 之前（两侧共用「计划记下的状态」这一身份）。
+- `rebind`：uuid 之后、id+upgrade 之前加 print 一趟。
+- `picksFor`：记了 print、候选无一张带该状态且同 id 多张 ⇒ 拒绝整条答案（与出牌路径 `liveCardFor` 对齐）。
+- `identityOf`：id+升级 → CardPrint（蛇眼下同名牌不同费用不再折叠成同一分支）。
+- `fillHandSelection`/`fillGridSelection`：候选池按引用剔除本轮已选（新增 `withoutIdentical`），避免同状态两张选成同一张。
+- `live selection` 日志加 `state=` / `planState=`。
+
+**代价**：选项去重与解析多算几次 `CardPrint.of`（与每步 digest 同量级）；分支数上升（同名不同状态不再合并），受 `Limits.handBranches` 截断。
+**风险**：状态对不上时会**更早拒绝并停下**（有意，不静默）；同状态副本按「第一张」约定解析。回滚：逐条改回 / `identityOf` 回 id+升级。
+**对 mod 影响**：面板/自动出牌的选牌步与计划一致；搜索宽度上升；不认任何 mod 类。
+**构建**：BUILD OK（144 源文件，`--release 8`，562 entries，1,318,735 B）；安装因游戏在运行被拒（jar 被锁），需关闭游戏后跑 `tools/install.ps1`。
+
+## 发布 1.0.5（2026-11-18）
+
+| 项 | 内容 |
+| --- | --- |
+| 内容 | B200 选牌身份统一：`matchOffered` 把 `CardPrint` 提到 uuid 之前、`rebind` 加 print 一趟、`picksFor` 在「多副本且无一张带计划状态」时拒绝、`identityOf` 去重键改 `CardPrint`、填屏候选池 `withoutIdentical` 剔除已选、`live selection` 日志补 `state`/`planState` |
+| 版本 | `resources/ModTheSpire.json` 1.0.4 → 1.0.5；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行同步；工坊 `config.json` 的 description 版本行与 `changeNote` 同步 |
+| 构建 | `tools/install.ps1` BUILD OK（144 源文件、562 entries、1,318,727 B），sha256 `7BC4CEBEF64F1C39261A102C3A0C69ED0E389442D2328761DCFA8830DD83DE61` |
+| 实机 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`（源/目标哈希一致） |
+| 创作工坊 | 条目 3839053516：`content\sts1-engine-solver.jar` 换新（1,318,727 B，同 sha），config.json 以 GBK/936 无 BOM 回写（版本 1.0.5 + changeNote），备份 `config.json.bak-20261118`；上传返回「Successfully updated workshop item!」 |
+| GitHub | 本地提交 06c1058 已生成（6 个文件，+221/-18），**推送未成功**：github.com:443 TLS 连接被重置（Recv failure: Connection was reset / Failed to connect），22 端口超时，未配置代理；master 领先 origin 1 个提交，网络恢复后 git push origin master 即可 |
+| 门禁 | 未跑（用户 m00732 自测） |
+
+发布口径：不宣称「蛇眼已修好」，只写「计划与实机统一按牌面状态认牌、找不到时明确作废路线」；实机复测由用户做（同层邪教徒 + 蛇眼，看第 5 回合两张打击能否打完、日志有无 `selection: … none carries the planned state`）。
+

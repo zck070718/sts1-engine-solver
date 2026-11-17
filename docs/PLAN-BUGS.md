@@ -4714,3 +4714,71 @@ pending 被清空后，`planIsStale()` 的 `pending == null` 分支只看 `curre
 - **安装**：`mod/sts1-engine-solver.jar` 1,307,526 B，sha256 `53ABDBE5989D0AB50987350AAA95DD08CBD9D37D17F7F1663A21FB9DEEC90B70`，`INSTALL OK` 到 `D:\Steam\steamapps\common\SlayTheSpire\mods`。
 - **验证（待用户实测）**：①计算前后实机 Osty 血量不变；②日志不再出现 `static watch: … OstyManager#osty … put back`；③日志出现 `mirror entities: newly owned [… OstyManager#osty (declared Osty, currently null)]`；④不再出现 `LIVE STATE CHANGED`；⑤断网/普通战斗均能出计划。
 
+
+---
+
+## B200 「5 回合无伤拿下」实机第 5 回合两张打击打不死（user m00005，2026-11-18）
+
+### 现象
+
+- A20 邪教徒 50HP、遗物蛇眼（Snecko Eye）、角色 TheSilent 59/66。计划 19 步，trace 显示第 5 回合两张打击（6+6）杀 8HP 的怪。
+- 实机第 5 回合手牌 **数量/multiset 与沙盒完全相同**（4 打击 + 2 防御 + 生存者），**顺序不同**：
+  期望 H=Strike,Defend,Defend,Strike,Strike,Strike,Survivor，实际 H=Strike,Strike,Defend,Strike,Defend,Strike,Survivor。
+- 第一张打击按计划状态 c=2 命中；第二张要求 c=0 的打击，实机 3 张打击没有一张是 0 费，只剩 1 能量 ⇒
+  「3 copies of Strike_G in hand and none carries the planned state (Strike_G|c=0/0|...); refusing instead of playing a neighbour」，连拒 5 次后卡住，打不死。
+
+### 取证（C:\\Users\\YOKI\\sts1-engine-solver\\solver.log，00:24）
+
+- 偏离不是从第 5 回合开始：13510-13513 第 9 步「生存者（选：打击 → 确定）」首次 step 9 came out differently。
+  选牌前两侧同为 H=Strike,Defend,Defend,Defend,Strike；选后 expected H=Strike,Defend,Defend,Defend（弃第 2 张打击），
+  actual H=Defend,Defend,Defend,Strike（弃第 1 张打击）。两侧 **rng 计数完全相同**（cardRandom=20,shuffle=3,monster=38…），即不是随机流走偏。
+- 13610/13611 第 5 回合：两侧 multiset 相同（抽牌堆 D 段内容也相同）但顺序不同，rng 亦相同。
+- 13604/13322 的 static watch: … relicstats.patches.relics.SneckoInfo#cards/#costs 是 RelicStats 的**统计静态量**被沙盒写脏后原地还原（值已放回），与费用判定无关，排除。
+- 出牌路径早就堵住了同一个洞：13491 同一场第 4 步就打印过「2 copies of Strike_G … refusing instead of playing a neighbour」，而**选牌路径当时是静默回退**，所以偏离晚一步才暴露。
+
+### 根因（不是随机流，也不是蛇眼模拟错）
+
+1. **选牌答案的身份两侧不一致**：Driver.matchOffered 的五趟匹配原来是 uuid → print → id+name → id → name。
+   沙盒 fork 继承同一批 uuid，能精确到「第几张打击」；实机手里的牌是引擎自己重建的实例（日志反复出现 uuid … is sandbox-local），
+   uuid 那趟打不中，只能退到 id/name，**同 id 多副本时取列表第一张**。
+2. **第 9 步那两张打击状态相同**（同费；CardPrint 含 cost，同费即同 print）。沙盒按 uuid 弃第 2 张，实机按 id 弃第 1 张 ⇒ 手牌顺序分叉
+   ⇒ 回合结束弃牌堆顺序分叉 ⇒ 下次洗牌把同一串随机序列作用在**不同顺序**的堆上 ⇒ 抽牌顺序不同 ⇒ 蛇眼 ConfusionPower.onCardDraw 掷出的费用落到不同的牌上
+   ⇒ 计划里那张 0 费打击在实机不存在。
+3. 附带缺陷（本次记录，不改）：13513 已打印「autopilot stopped … 自动出牌已停下」，但 00:24:13 起仍继续执行第 10-18 步，「已停下」并未真停（另案）。
+
+### 修法（通用，不对任何卡牌/遗物特判）
+
+src/main/java/sts1solver/drive/Driver.java：
+
+1. matchOffered：**print 提到 uuid 之前** —— 两侧只能用「计划记下的状态」作为共同身份；同 print 多副本时都取第一张。
+2. rebind（选牌填屏）：uuid 之后、id+upgrade 之前**加一趟 print**，与 matchOffered 同规则。
+3. picksFor：记了 print、但候选里**没有一张带该状态且同 id 有多张**时**拒绝整条答案**（对齐出牌路径 liveCardFor 的严格性），
+   日志 selection: N copies of X on offer and none carries the planned state，不再「拿个邻居凑数」。
+4. identityOf（addOption 去重键）：id+升级 → **CardPrint**。蛇眼下「弃 0 费打击」与「弃 2 费打击」原本被折叠成同一分支。
+5. fillHandSelection / fillGridSelection：候选池用 withoutIdentical（按引用）剔除本轮已选中的牌，避免「选两张同状态的牌」被 print 规则解析成同一张。
+6. live selection 日志补 state=[所选项 print] planState=[计划 print]，下次可直接判定走的是哪一趟。
+
+### 代价
+
+- 性能：CardPrint.of 在选项去重与解析处多算几次（每张牌读少量字段，与每步 digest 同量级）。主要代价是**分支变多**：
+  状态不同的同名副本不再合并（蛇眼手里 5 张防御 5 种费用 ⇒ 弃牌选项 1 → 5），由 Limits.handBranches 上限截断，unlimited 档宽度上升最明显。
+- 代码：Driver 内 6 处改动 + 2 个辅助方法，无新文件、无新设置键、无 API 变更。
+
+### 风险
+
+- 第 3 条会让实机**更早停手**并打印拒绝原因：这是「不得静默」的取舍；过去会静默拿邻居继续，现在会停下。
+- rebind 走 print 后，两张状态相同的牌按「第一张」约定解析；若有 mod 靠副本 uuid 记录选择，会看到「选了另一张」（引擎自身不这么做）。
+- 回滚：6 处改动逐条改回即可；identityOf 改回 id+upgrade 即恢复原分支数（无需动 settings）。
+
+### 对 mod 的实际影响
+
+- 面板：选牌步显示的是计划要的那张；不会再把「弃第 1 张 / 弃第 2 张」当成同一答案。
+- 自动出牌：第 9 步这类无声偏离消失，第 5 回合按计划出完两张打击。
+- 搜索：同名不同状态成为不同分支，路线更贴近实机；代价是宽度/耗时上升（受上限约束）。
+- 其它 mod：只用 CardPrint（引擎字段）与 AbstractCard.uuid，不认任何 mod 类。
+
+### 验证（用户实机，按 m00732 不跑门禁）
+
+1. 同样 A20 邪教徒 + 蛇眼，计算后第 5 回合两张打击能打完、怪死。
+2. 日志不再出现第 9 步 step 9 came out differently。
+3. 若出现 selection: … none carries the planned state，把它发出来——说明还有别处状态差，需要继续查而不是绕过。
