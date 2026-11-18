@@ -2899,3 +2899,31 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 
 发布口径：不宣称「蛇眼已修好」，只写「计划与实机统一按牌面状态认牌、找不到时明确作废路线」；实机复测由用户做（同层邪教徒 + 蛇眼，看第 5 回合两张打击能否打完、日志有无 `selection: … none carries the planned state`）。
 
+## B201 沙盒贴图泄漏导致史莱姆王计算崩溃（user m00511，2026-11-19）
+
+**问题**：打史莱姆王的计算跑约 17 分钟后崩溃/卡死，怀疑是计算量太大。
+
+**定位链**：log:2877-2888 的栈直指 `SlimeBoss.takeTurn → new AcidSlime_L → AbstractCreature.loadAnimation → new TextureAtlas`，
+异常是 `decoder init failed for stream` / `File not found … skeleton.atlas (Internal)`；watchdog（00:07:25）20 个采样同一栈 `nSwapBuffers`、
+写 hang dump 报「系统资源不足」，而 `OutOfMemoryError` 全程 0 次 ⇒ 不是算力，是**显卡侧资源被耗光**。
+沙盒从不 dispose 怪物（`DeathSettle.java:29` 的规则是为实机共享怪物写的），于是每次分裂泄漏 1 份真实 GL 纹理；
+1012s、60 万条世界线、8GB 显存 ⇒ 驱动卡死，随后贴图解码/临时文件全部失败。
+
+**改动**：
+
+- 新增 `mirror/SandboxArt.java`：`@SpirePatch(AbstractCreature.loadAnimation, {String,String,float})` 的 postfix，仅 `World.anyInstalled()` 时反射记下 `atlas`（protected，走 `Reflect.find`），计数 loaded/disposed。
+- `World.uninstall()` 的 finally 加 `SandboxArt.close()`：把本窗口新建的 atlas 逐个 dispose；正常/异常/forceRestore 都覆盖。
+
+**代价**：每窗口一次遍历 + 至多 1–2 次 glDeleteTexture；解码成本不变（不做共享缓存）；新增 1 文件约 150 行、`World` 6 行。
+**风险**：只释放窗口内新建的贴图，实机贴图从不入表；若将来沙盒怪物贴图变黑，回滚＝删掉 `close()` 调用。
+**对 mod 影响**：面板/搜索/自动出牌不变；不限时计算不再随分裂次数吃显存；不 patch 任何 mod 类。
+**已知边界**：不做按路径共享 atlas（需改 gdx `final` 容器，风险大于收益）；只覆盖 `loadAnimation` 这条美术入口；未加「失败重复 N 次即中止」。
+
+**发布**：版本 1.0.5 → 1.0.6（`resources/ModTheSpire.json`、`docs/WORKSHOP-DESCRIPTION.md`）。本次只做本地 BUILD OK + INSTALL OK（见下方表格）；工坊与 GitHub 待用户指示再推。
+
+| 项 | 内容 |
+| --- | --- |
+| 构建 | `tools/install.ps1` BUILD OK（145 源文件、564 entries、1,321,810 B），1.0.6 的 sha256 `2788BA0991160761026D699B9E114CA0BD635FDCEDE3DB798F2995FD6A6CD8B7` |
+| 实机 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` |
+| 门禁 | 未跑（用户 m00732 自测） |
+

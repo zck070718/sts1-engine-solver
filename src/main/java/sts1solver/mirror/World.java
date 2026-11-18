@@ -449,6 +449,13 @@ public final class World {
             livePrefData = null;
             liveContainers = null;
             installed = false;
+            // B201: the art this window uploaded goes back to the driver here, on every exit of the
+            // window (normal, failed, interrupted). Live art is never in the registry.
+            try {
+                SandboxArt.close();
+            } catch (Throwable t) {
+                Log.warn("reclaiming the window's textures failed: " + t);
+            }
             try {
                 sts1solver.util.ConsoleMute.pop();
             } catch (Throwable t) {

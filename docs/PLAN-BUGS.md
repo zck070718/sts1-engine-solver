@@ -4782,3 +4782,84 @@ src/main/java/sts1solver/drive/Driver.java：
 1. 同样 A20 邪教徒 + 蛇眼，计算后第 5 回合两张打击能打完、怪死。
 2. 日志不再出现第 9 步 step 9 came out differently。
 3. 若出现 selection: … none carries the planned state，把它发出来——说明还有别处状态差，需要继续查而不是绕过。
+
+---
+
+## B201 打史莱姆王计算中崩溃：沙盒构造怪物时加载的贴图从不释放（user m00511，2026-11-19）
+
+### 现象
+
+- 打史莱姆王（卡组里没有华丽收场）开启不限时计算，约 17 分钟后「计算没了、游戏卡住」：
+  最后一条正常日志是 00:07:17.153 `ERROR engine update threw: phase=WAITING_ON_USER turnHasEnded=true queues=9/0/1 player=ok hand=0`，
+  之后 `expand failed (1x/2x/3x)` 反复重试同一分支，游戏整体卡死（watchdog: no frame for 4141 ms）。
+- 不是用户猜的「卡组里没有华丽收场」之类卡牌问题，**也不是算力/复杂度算错**：全程 **OutOfMemoryError 0 次**。
+
+### 取证（C:\Users\YOKI\sts1-engine-solver\solver.log，3169 行，00:06–00:07）
+
+- 精确栈（log:2877-2888）：
+  `com.badlogic.gdx.utils.GdxRuntimeException: Couldn't load file: images/monsters/theBottom/slimeL/skeleton.png`
+  ← `Caused by: java.io.IOException: Error loading pixmap: decoder init failed for stream`
+  ← `AbstractCreature.loadAnimation(AbstractCreature.java:401)` ← `AcidSlime_L.<init>(AcidSlime_L.java:86)`
+  ← `SlimeBoss.takeTurn(SlimeBoss.java:155)` ← `GameActionManager.getNextAction` ← `Driver.engineFrame(Driver.java:1054)`
+  ← `Driver.drain(557)` ← `Driver.endTurn(1427)` ← `Legal.apply(Legal.java:347)` ← `Solver.expandCore(Solver.java:1009)`。
+- 计数：decoder init failed 3 次、Couldn't load file 9 次、`File not found: images\monsters\theBottom\slimeAltL\skeleton.atlas (Internal)` 6 次（log:3058-3105）、
+  `expand failed` 14 次、`a world was left installed; restoring the live game` **70 次**（log:2963-3156）。
+- 00:07:25 watchdog：`writing …\hang-20261119-000721.txt failed: java.io.FileNotFoundException … (系统资源不足，无法完成请求的服务。)`
+  （=ERROR_NO_SYSTEM_RESOURCES，连临时文件都开不出来），20 个采样**同一个栈** `org.lwjgl.opengl.WindowsContextImplementation.nSwapBuffers`
+  —— 卡在显卡驱动，不是我们的搜索循环。
+- 规模：已查阅 609170 条世界线（本档 34023），601 条/s，beam 42（加宽 2/4 档），已用 **1012s（不限）**；
+  `frame stats: frames=20984 over=1011569ms p50=44ms`；heap 334MB（23:24 启动）→ 振荡 1.2–3.1GB / 上限 7106MB，gc=754 次/10852ms。
+- 机器：RTX 5070 Laptop **8GB 显存**（docs/RUNMAP-PLAN.md:304），31.2GB 内存。
+
+### 根因
+
+1. 史莱姆王分裂时引擎 `new AcidSlime_L(...)`/`new SpikeSlime_L(...)`，构造函数末尾调 `AbstractCreature.loadAnimation(atlasUrl, jsonUrl, scale)`，
+   它 `new TextureAtlas(...)`：**真的解码 PNG 并往 GL 上传纹理**（沙盒与实机共用同一个 GL 上下文，这是真实的显存分配，GC 收不回来）。
+2. 沙盒**从不** dispose 这些 atlas：`mirror/DeathSettle.java:29` 明确写「dispose() 会释放与实机共享的贴图资源」，于是 settle() 只置 `isDead`+`powers.clear()`。
+   那条规则是为「实机战斗里已有的怪物」写的，套到**沙盒自己 new 出来的怪物**身上，结果就是每次分裂泄漏 1 份贴图（每次分裂 2 只）。
+3. 不限时预算下跑 1012s、60 万条世界线，分裂次数以千计 ⇒ 8GB 显存耗尽 ⇒ 驱动卡死（nSwapBuffers 卡 4.1s、整帧不刷新）
+   ⇒ 之后任何贴图解码/文件打开都失败（decoder init failed、文件 not found、临时文件写不出）。**这就是「计算量导致崩溃」的真身：不是算法复杂，是运行时间越长泄漏越多。**
+
+### 修法（通用，不特判任何怪物/遗物/卡牌）
+
+新增 `src/main/java/sts1solver/mirror/SandboxArt.java`：
+
+1. `@SpirePatch(clz = AbstractCreature.class, method = "loadAnimation", paramtypez = {String.class, String.class, float.class})`
+   的 `@SpirePostfixPatch`：**仅当 `World.anyInstalled()`**（即有沙盒窗口装着）时，用反射读 `AbstractCreature.atlas`（protected 字段，`Reflect.find`），
+   把新建的 `TextureAtlas` 记进 `IdentityHashMap`。
+2. `World.uninstall()` 的 `finally`（`installed = false` 之后、`ConsoleMute.pop()` 之前）调 `SandboxArt.close()`：把本窗口记下的 atlas 逐个 `dispose()`。
+   正常出窗、抛异常出窗、forceRestore 都走这条路，所以半途失败也不会漏。
+3. 实机的贴图**从不入表**（窗口外构造的怪物不会进来），因此永远只释放沙盒自己 new 出来的那份。
+4. 计数与日志：首次加载、每 2000 次、以及每次真正释放过的窗口各打一行
+   `sandbox art: loaded=X disposed=Y` / `sandbox art: closed window N (k atlas(es))`，供实机核对 `loaded == disposed`。
+
+### 代价
+
+- 性能：每个窗口结束时只遍历本窗口新建的 atlas（通常 0 个，分裂时 1–2 个），一次 `Texture.dispose()`（渲染线程，glDeleteTexture）——与窗口已经在做的静态量还原同量级。
+- 内存：从「每次分裂永久 +1 份贴图/显存」降为「同时只有当前窗口新建的那几份」。**解码成本没有变化**（没有做缓存/共享，见「已知边界」）。
+- 代码：新增 1 个文件（约 150 行，含注释），`World.uninstall()` 加 6 行；无新设置键、无 API 变更、不改搜索逻辑。
+
+### 风险
+
+- 只有「引擎让沙盒创建的生物在窗口结束后还被使用」时才会用到已释放的纹理；沙盒从不渲染，存储下来的世界线再装回来也不会重新绘制它的怪物，
+  真要继续演算时新造出来的怪会重新加载贴图。即便如此，若将来出现「沙盒怪物贴图变黑/花」的现象，第一嫌疑就是这条，回滚方式是删掉 `SandboxArt.close()` 调用（一行）。
+- 反射读 `atlas` 依赖引擎字段名；字段不存在时只打一次 warn 并跳过（不会中断搜索）。
+
+### 对 mod 的实际影响
+
+- 面板/搜索结果：不变。
+- 长时间计算：显存不再随分裂次数增长；打史莱姆王/史莱姆类分裂怪可以跑满不限时预算。
+- 其它 mod：只 patch 引擎的 `AbstractCreature.loadAnimation` 与引擎字段，不认任何 mod 类；不 dispose 实机贴图，因此不影响任何 mod 的显示。
+
+### 已知边界（如实记录）
+
+- 没有做「按美术路径共享同一份 atlas」的缓存：那需要 patch gdx 的 `TextureAtlas.load` 并改 `final` 容器，共享出去的 `AtlasRegion` 有被引擎改写的风险，收益只是省掉重复解码（不是本次崩溃的原因），故不做。
+- 只覆盖 `AbstractCreature.loadAnimation` 这一条加载路径（引擎里怪物/角色的美术入口）。若将来有别的沙盒路径直接 `new TextureAtlas`，不会入表——届时同样现象会复现，需要在这条路径上补钩子。
+- 堆占用（日志里 334MB → 振荡 1.2–3.1GB）是另一条线：搜索保存的世界线越多，Java 侧保留的对象越多，但它没有耗尽 7.1GB 上限（OutOfMemoryError 0 次），**不是本次崩溃的原因**；本次只修显存/原生资源这条。
+- 本次没有加「失败重复 N 次就中止搜索」的保护：现在仍会一直重试（日志会先说 expand failed 3 次）。资源耗尽被修掉后这条不再是死路，但若再次出现，用户应手动停算。
+
+### 验证（用户实机，按 m00732 不跑门禁）
+
+1. 打史莱姆王，开不限时计算跑够 15 分钟以上：不再卡死；日志里 `sandbox art: loaded=X disposed=Y` 的 X 与 Y 应相等（或只差当前窗口里正在用的那几份）。
+2. 结束后照常给出路线、自动出牌正常。
+3. 若仍然卡死：把最后 200 行日志发出来，重点看 `sandbox art` 行是否增长到很大而 disposed 不跟。
