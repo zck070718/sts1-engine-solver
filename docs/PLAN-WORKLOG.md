@@ -2894,7 +2894,7 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 构建 | `tools/install.ps1` BUILD OK（144 源文件、562 entries、1,318,727 B），sha256 `7BC4CEBEF64F1C39261A102C3A0C69ED0E389442D2328761DCFA8830DD83DE61` |
 | 实机 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`（源/目标哈希一致） |
 | 创作工坊 | 条目 3839053516：`content\sts1-engine-solver.jar` 换新（1,318,727 B，同 sha），config.json 以 GBK/936 无 BOM 回写（版本 1.0.5 + changeNote），备份 `config.json.bak-20261118`；上传返回「Successfully updated workshop item!」 |
-| GitHub | 本地提交 06c1058 已生成（6 个文件，+221/-18），**推送未成功**：github.com:443 TLS 连接被重置（Recv failure: Connection was reset / Failed to connect），22 端口超时，未配置代理；master 领先 origin 1 个提交，网络恢复后 git push origin master 即可 |
+| GitHub | 已推送：本地提交 0bcfcf4（B200: identify picked cards by CardPrint on both sides; release 1.0.5）→ origin/master（2026-11-18 网络恢复后重试成功；此前记录的重置/超时已不再成立） |
 | 门禁 | 未跑（用户 m00732 自测） |
 
 发布口径：不宣称「蛇眼已修好」，只写「计划与实机统一按牌面状态认牌、找不到时明确作废路线」；实机复测由用户做（同层邪教徒 + 蛇眼，看第 5 回合两张打击能否打完、日志有无 `selection: … none carries the planned state`）。
@@ -2919,11 +2919,13 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 **对 mod 影响**：面板/搜索/自动出牌不变；不限时计算不再随分裂次数吃显存；不 patch 任何 mod 类。
 **已知边界**：不做按路径共享 atlas（需改 gdx `final` 容器，风险大于收益）；只覆盖 `loadAnimation` 这条美术入口；未加「失败重复 N 次即中止」。
 
-**发布**：版本 1.0.5 → 1.0.6（`resources/ModTheSpire.json`、`docs/WORKSHOP-DESCRIPTION.md`）。本次只做本地 BUILD OK + INSTALL OK（见下方表格）；工坊与 GitHub 待用户指示再推。
+**发布**：版本 1.0.5 → 1.0.6（`resources/ModTheSpire.json`、`docs/WORKSHOP-DESCRIPTION.md`）。本次完成本地 BUILD OK + INSTALL OK，并按用户指示（m00757）推送创意工坊与 GitHub（见下方表格）。
 
 | 项 | 内容 |
 | --- | --- |
 | 构建 | `tools/install.ps1` BUILD OK（145 源文件、564 entries、1,321,810 B），1.0.6 的 sha256 `2788BA0991160761026D699B9E114CA0BD635FDCEDE3DB798F2995FD6A6CD8B7` |
 | 实机 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` |
+| 创作工坊 | 条目 3839053516：`content\sts1-engine-solver.jar` 换新（1,321,810 B，sha 同上），config.json 以 GBK/936 无 BOM 回写（description 版本行改 1.0.6、changeNote 换 1.0.6 说明、性能说明新增「长时间计算不会累积占用显存」一行），备份 `config.json.bak-20261119`；上传返回「Successfully updated workshop item!」 |
+| GitHub | 已推送：本地提交 636f461（7 个文件，+284/-2）→ origin/master |
 | 门禁 | 未跑（用户 m00732 自测） |
 
