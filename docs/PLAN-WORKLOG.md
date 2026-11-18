@@ -2929,3 +2929,5 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | GitHub | 已推送：本地提交 636f461（7 个文件，+284/-2）→ origin/master |
 | 门禁 | 未跑（用户 m00732 自测） |
 
+**重传（用户 m00822「上传创意工坊不要改mod可见性，简介更新中文区」）**：`mod-uploader.jar` 的 `Uploader.updateItemInfo` 无条件 `setItemDescription`，只有 `visibility` 为空串才跳过 `setItemVisibility`；`WorkshopUploadConfiguration` 省略该键会退回默认 `private`、取值不在 {private, friends, friendsonly, public} 里会 `Main.exit(1)` —— 所以「不改可见性」只能把 config 写成条目当前的真实值。经用户确认条目为公开后，`config.json` 的 `visibility` 由 `private` 改为 `public`（备份 `config.json.bak-20261119b`，GBK/936 无 BOM，4894 B），description 未再改动（已是中文 1.0.6 版），重传返回「Successfully updated workshop item!」（日志 `_tmp/upload-workshop-1.0.6-public.log`）。
+
