@@ -2966,5 +2966,7 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 - 根因 | 计划答案 `Driver.namesOf` 只存 cardID，升级状态丢失；实机 `picksFor` 用 cardID 找到两张同 ID、却没有任何一张带计划状态 ⇒ 整体拒绝 | ✅
 - 代码 | `Solver.positionKeys/positionedIds/positioned/joinSegments(positions,…)`（答案写 `id@STATE#k`）；`Solver.stateRun`；`Solver.positionsOn` 5 参重载（状态多重集相同→按状态匹配、丢 #k）；`Gameplay.answerNextScreen` 重试 3 次后 `Driver.refuseNow`；`Gameplay.executeStepInternal` 置 `action.replayLive=true` 并在对不上时停手提示；`Solver.answerOneScreen(..., boolean live)` 只在沙盒回退；`Action.replayLive`（transient） | ✅
 - 离线判据 | `_tmp/b204/Check.java` 8 条（同状态换槽位、多副本、缺状态、旧计划、坏槽位标记）全 OK；javac 0 error | ✅
-- 构建/安装 | BUILD OK 145 源文件 564 entries 1,326,910 B；INSTALL OK sha256 10E7CD30216EC43F620470F8532A8563FC5FB2188313A4D7009244B27E00D464 | ✅
+| 构建/安装/发布 | BUILD OK 1,326,909 B；INSTALL OK sha256 5064CB5F4F1E35161D9076F99567A35AD53E4F993E654AA11F0B7FB8D63DFC20；资源 ModTheSpire.json 1.0.7；工坊 config.json 1.0.7（GBK 无 BOM，备份 config.json.bak-20261120） | ✅ |
+| 创意工坊 | 2026-11-20 10:21 `Successfully updated workshop item!`（公开可见性未改）；日志 _tmp\upload-workshop-1.0.7.log | ✅ |
+| GitHub | 本地提交 c38e5ce；推送失败（Connection was reset / 端口 443 超时，4 次），master 领先 origin 1，待网络恢复重跑 tools\push-github.ps1 | ⏳ 待推送 |
 - 实机验证 | 由用户自测；日志 `screen i/n answer=… planState=… sandboxOffered=… liveOffered=…` | ⏳ 待实机
