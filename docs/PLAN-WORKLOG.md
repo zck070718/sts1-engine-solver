@@ -3034,4 +3034,7 @@ user m03369：「计划妥当结束回合不选牌的话不自动出牌，但是
 | 安装 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，sha256 FB8EAD62A0051EB40A174F2B2904B749818CD87340849B27BE627917726A9DC4；已核包内 `sts1solver/Gameplay.class` 含新字符串 `pick nothing` | ✅ |
 | 文档 | PLAN-BUGS.md ## B210、PLAN.md 状态表 B210 行、本表 | ✅ |
 | 实机验证 | 由用户自测：①留牌屏「不选」约 0.25s 后自动点确定并继续；②日志见 `answer=[] (pick nothing)`；③不再出现 `no-plan-answer: the plan has 0 answer(s)` 与「结束回合里开了一块计划没有答案的选牌屏」；④带卡牌的选牌屏不变 | ⏳ 待实机 |
-| 发布 | 未发布：版本号仍为 1.0.8，工坊/GitHub 未动（等用户实机确认后再定版本号与 changeNote） | ⏳ 待定 |
+| 发布 | 版本 1.0.9：`resources/ModTheSpire.json`、`docs/WORKSHOP-DESCRIPTION.md`（当前版本行 + 1.0.9 bullet，并把「节奏默认 750 ms」的过时值改回 450 ms）、工坊 `config.json`（GBK/936 无 BOM，4,787 B，备份 `config.json.bak-20261120c`，当前版本 1.0.9、changeNote 重写） | ✅ |
+| 构建/安装（1.0.9 定版后重编） | BUILD OK 145 源文件、564 entries、1,327,907 B；INSTALL OK sha256 EF56E1C7F68C8521B9D2CB5563D381E01CFF098D4181571E5609028543FA8E02；jar 内 `ModTheSpire.json` 版本已核为 1.0.9（覆盖上面 1,326,905 B / FB8EAD62… 那一版） | ✅ |
+| 创意工坊 | jar 先同步到 `D:\mods-workshop\sts1-engine-solver\content\sts1-engine-solver.jar`（sha256 同上）再上传，日志 `_tmp\upload-workshop-1.0.9*.log`（首次 SteamResult=Fail，重传成功，判据仍是 UploadingContent + Successfully updated workshop item!） | ✅ |
+| GitHub | 提交 `7db69a0`（B210 代码+文档）与 `f1e265b`（1.0.9 版本号/简介）已推 origin master | ✅ |
