@@ -3006,7 +3006,7 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 构建 | BUILD OK 145 源文件、564 entries、1,326,564 B（B209 注释改动后 1,326,606 B） | ✅ |
 | 文档 | PLAN-BUGS.md ## B208（并把 B207 标「已撤销」）、PLAN.md 状态表 B208 行 + B207 行改「已撤销」、本表 | ✅ |
 | 实机验证 | 由用户自测：日志不再出现 `not-settled: a screen is open`；计算时长回到正常档 | ⏳ 待实机 |
-| 安装/发布 | 与 B209 同版 1.0.8 安装/上传 | ⏳ |
+| 安装/发布 | 1.0.8 同版发布：BUILD OK 1,326,606 B；INSTALL OK sha256 F48324A62102408FC7910FCC17DB03EF8BBF045D444569F07D3D193F7E98486D（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，jar 内 `ModTheSpire.json` 版本已核为 1.0.8）；创意工坊 content jar 已同步后上传（日志含 `UploadingContent` + `Successfully updated workshop item!`，`_tmp\upload-workshop-1.0.8.log`）；GitHub 145d199 已推（187cb9b..145d199 master） | ✅ |
 
 ## B209 自动出牌：选牌屏等一拍（250ms）+ 计划没有答案就停手提示（user m03043 / m03085，2026-11-20）
 
@@ -3016,8 +3016,8 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 参考 | CombatSolver-main `NativeChoiceRuntime.cs`：`OtherSurfaceMinimumOpenMilliseconds = 250`（:700）、`MultiSelectStepMilliseconds = 150`（:701）、计划外选择抛异常（:521-525） | ✅ |
 | 代码 | `ui/AutoPace.java`：`SELECT_MIN_OPEN_DEFAULT_MS = 250`/`SELECT_MIN_OPEN_MAX_MS = 2000` + `selectMinOpenMs()`（settings.txt `autoplaySelectMinOpenMs`，0=旧行为）；`Gameplay`：`selectionOpenAt`/`selectionMayClick()`/`selectionClicked()`，节拍只在这三处入口判（`pollPending`、`executeStepInternal`(isSelection)、`answerLatentSelection`），每块屏各自计时；`answerNextScreen` 的「答案用完」「记屏没记答案」改 `refuseNow("no-plan-answer", …)`，`pollPending` 对 `no-plan-answer:` 停自动出牌并提示，`answerLatentSelection` 不再点首选项，`answerEndTurnScreens` 计划外屏返回未知风险（闸门 STOP）；删 `Driver.resolveSelectionLiveFirst` 与幽灵 javadoc | ✅ |
 | 代价/风险 | 每屏多 250ms（可关）；多选「每张 150ms」未实现（fillHandSelection/fillGridSelection 一帧填完，属已知边界）；停手是相对 B207 的行为回退（不猜，符合 m03085） | ✅ 已写 PLAN-BUGS |
-| 构建/安装 | BUILD OK 145 源文件、564 entries、1,326,606 B；INSTALL OK（见下） | ⏳ |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,326,606 B；INSTALL OK sha256 F48324A62102408FC7910FCC17DB03EF8BBF045D444569F07D3D193F7E98486D | ✅ |
 | 文档 | PLAN-BUGS.md ## B209、PLAN.md 状态表 B209 行、本表 | ✅ |
 | 实机验证 | 由用户自测：屏出现约 0.25s 后才点；计划没答案的屏停手提示、可点「自动」继续 | ⏳ 待实机 |
-| 发布 | 版本号 1.0.8（B208+B209 同版），GitHub + 创意工坊 | ⏳ |
+| 发布 | 版本号 1.0.8（B208+B209 同版）：`resources/ModTheSpire.json` + `docs/WORKSHOP-DESCRIPTION.md` + 工坊 `config.json`（GBK/936 无 BOM，4,890 B，备份 `config.json.bak-20261120b`，description 的「当前版本」同步 1.0.8、节奏默认改 450ms，changeNote 重写）；已上传创意工坊、已推 GitHub 145d199 | ✅ |
 
