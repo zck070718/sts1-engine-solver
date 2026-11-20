@@ -5334,6 +5334,66 @@ src/main/java/sts1solver/drive/Driver.java：
 - 构建/安装：BUILD OK 145 源文件、564 entries、1,328,362 B；INSTALL OK sha256 79FFC6C3A32B38197D961D5849B7010C09B9816247BF9E8A6573C7564BD21336（版本 1.0.11）。
 - 验证：由用户自测——战斗结束后界面不再每 0.25 秒闪一次；日志里 `fight state off` 之后不应再出现同一房间的 `fight state on`（除非真的重新开打）。
 
+## B213 打完战斗统计里的「场数 / 游戏时间」自己会涨（user m00005 / m00344，2026-11-20）
+
+### 现象
+
+- user m00005：「打完战斗统计角色场数和游戏时间增加」——求解一次战斗后，统计页里该角色的**游玩场数**（`LOSE_COUNT` / `WIN_COUNT`）与**游戏时间**（`PLAYTIME`）自己变大，像是真的多打了一局。
+- 磁盘证据（`D:\Steam\steamapps\common\SlayTheSpire\preferences`，2026-11-20 复核；Prefs 里存的是**字符串**）：
+  - `STSDataTheSilent`：PLAYTIME=31,866,996、LOSE_COUNT=48,755 ⇒ 653.6 s/次。
+  - `STSDataDefect`：PLAYTIME=90,259,412、LOSE_COUNT=84,187 ⇒ 1,072 s/次。
+  - `STSDataWatcher`：PLAYTIME=137,588、LOSE_COUNT=344、WIN_COUNT=16。
+  - `STSDataVagabond`：PLAYTIME=481、LOSE_COUNT=350、ENEMY_KILL=1,948,826、BOSS_KILL=7,589。
+  - `STSSaveSlots`：PLAYTIME=122,299,741。
+  - 四个角色文件 mtime 全是 2026-11-20 16:35:03（一次真实结算把它们一起写盘）；而沙盒自己的文件 `preferences\sts1solver-sandbox\player-STSData*` 停在 11/15 02:19（Vagabond）与 11/3（Silent）——**模拟的写盘全被拦住了，脏值走的是另一条路**。
+- `solver.log` 里成片的 `sandbox writes: dropped a sandbox preference save (...)` 证明 `PlayerPrefs` 确实在拦写盘。所以真实文件能被写脏，只可能是「内存里的实机对象先被改脏，再由真实流程 flush」。
+
+### 根因（两层，缺一不可）
+
+1. **实机 CharStat 被共享**：`ClonePolicy.shareClass` 的通用规则 `com.megacrit.cardcrawl.screens.` ⇒ `return !isSelectionScreen(n)`，`com.megacrit.cardcrawl.screens.stats.CharStat` 正落在该前缀下 ⇒ 判为共享。于是 `AbstractDungeon.player`（`Statics.ROOTS` 的 CLONE 根）克隆出来的沙盒玩家，`charStat` 字段**仍指向实机那个 CharStat 对象**。
+2. **统计写入是「先改字段、再写 Prefs」**：`CharStat.incrementDeath()`（`_tmp\c-CharStat.txt:956-984`）与 `incrementPlayTime(long)`（`:1160-1177`）都是 `this.numDeath += 1; pref.putInteger(LOSE_COUNT, this.numDeath); pref.flush();`。`PlayerPrefs` 只重定向了 `Prefs` 对象（filepath/data），`World.uninstall` 也只还原 Prefs —— **没有任何一步还原 CharStat 的字段**。模拟死亡/模拟时长就直接留在了实机对象里：统计页当场可见，下一次真实结算把这个脏值 flush 进 `preferences\STSData<角色>`。
+3. 这是 B25 的盲区：B25 只覆盖「Prefs 写盘」，从未覆盖「CharStat 内存字段」；`docs/PLAN-ISOLATION.md:111` 里「统计/成就类写盘」一直标着 ⚠️。
+
+### 修法
+
+1. `ClonePolicy.shareClass`：`com.megacrit.cardcrawl.screens.stats.CharStat` ⇒ **复制**（治本）。
+2. `ClonePolicy.shareFieldUncached`：`CharStat.runs` ⇒ **共享**（防性能塌方）。`CharStat(AbstractPlayer)` 构造器会 `Gdx.files.local("runs\...")` 列目录并对每个历史文件 `runs.add(new RunData(...))`（`c-CharStat.txt:782-841`）；本机 `runs\` 有 60 个文件。若连这份列表一起深拷贝，每次 fork 多拷 60 个 RunData（约 +90 µs，而 player 克隆本身约 233 µs/次）⇒ 23,236 次 fork 约 +2 s，一次 8.3 s 的求解慢 25%。列表在构造后只被读、没有代码往里追加，共享安全。
+3. 新增 `src/main/java/sts1solver/mirror/CharStatGuard.java`：`install` 快照实机 CharStat 的全部 primitive 实例字段，`uninstall` 比对并把改动过的字段写回原值，同时 `Log.warn` 点名（`career record guard (B213)`）。`World.install` 在 `LiveGuard.capture()` 之后调 `CharStatGuard.capture()`（World.java:243），`World.uninstall` 在 `LiveGuard.verify()` 之后调 `CharStatGuard.verify()`（World.java:392）。它是兜底：即使以后又有人把 CharStat 判回共享，实机统计也不会被留下脏值。
+4. `Statics` 装配后处理：`CardCrawlGame.playtime`、`Settings.totalPlayTime` 标 `discardOnReadBack`（纯加固；`Driver` 今天不调 `AbstractDungeon.update`，没人会动它们）。
+
+### 代价
+
+- 求解性能：player 克隆多出 1 个 CharStat（约 16 个字段拷贝），估 1~3 µs/fork ⇒ 单次求解 +25~70 ms（0.3~0.9%）。不共享 `runs` 的话是 +25%，所以那一条是必需的。
+- `CharStatGuard`：每窗口一次反射读 + 一次比对 ≈ 3 µs（约 5,409 窗口 ⇒ 十几毫秒/次求解），无 per-fork 开销。
+- 内存：每 fork 多一个 CharStat（百字节级），可忽略。
+- 日志：窗口干净时每 5 分钟一行 `career record guard (B213): N clean window(s)`；真有改动时一行 warn 列出字段名。
+
+### 风险
+
+- 复制 CharStat 改变了「沙盒统计值与实机同步」的隐式假设——但全仓库没有任何求解代码读 `CharStat`（`grep CharStat src/main/java/sts1solver` 只命中注释），不影响搜索结果。
+- `runs` 共享意味着沙盒能看到实机历史战局列表；只读，`RunData` 不被任何模拟代码触碰。
+- 守卫会把窗口内被改过的字段写回旧值：窗口跑在渲染线程、同步执行，不存在合法并发修改，误伤概率≈0；万一真有人改（例如以后又改回共享），它只会纠正并指名，不会静默。
+- 回滚：三处局部改动（ClonePolicy 两条规则、CharStatGuard + World 两行调用、Statics 一段 discard），逐条还原即可，无存档格式变化。
+- 历史脏数据不会自己回退：`PLAYTIME/LOSE_COUNT/WIN_COUNT/ENEMY_KILL/BOSS_KILL/WIN_STREAK` 已被写进 `preferences\STSData<角色>`，要关游戏后手改（`.backUp` 一起改或删除）。
+
+### 对 mod 的实际影响
+
+- 统计/存档：模拟战斗不再增加实机场数与游戏时间；统计页数字在下一次真实结算前不再变化。
+- 求解结果、随机流、自动出牌节奏、选牌应答：不变。
+- 面板：不变（本 bug 没有面板提示）。
+- 兼容性：只改镜像策略与一个旁路守卫，不碰任何 mod 内容；mod 角色若返回 `CharStat` 子类，守卫按实际类取字段，仍然覆盖。
+
+### 验证
+
+- 构建：BUILD OK 146 源文件、565 entries、jar 1,331,482 B；INSTALL OK sha256 `0E867FD5BBBB3BF81B2DC63CDE5374F74EC11A2AC265A21947507F7BF89B58A8`（版本 **1.0.13**）。
+- 实机（由用户自测）：①打一场战斗后点 F8 求解，求解完成后看统计页「场数/时间」是否不动；②正常结算这一局，再看 `preferences\STSData<角色>` 的 `PLAYTIME/LOSE_COUNT` 是否只增加了真实那一局；③若日志出现 `career record guard (B213): the window CHANGED`，把那行发出来（说明还有第二条路径在写实机记录）。
+
+### 关联
+
+- **B25**（Prefs 写盘重定向）：本次补上它没覆盖的「CharStat 内存字段」；B25 的结论仍然有效。
+- **B134**（MetricData 被共享写脏）：同一类「共享了一个引擎会写的普通数据对象」，修法同构（复制 + 必要字段共享）。
+- **B192**（LiveGuard）：守卫只测不改；B213 的守卫会改回——因为统计字段本来就是**不该动**的数据，不是窗口允许改的克隆。
+
 ## B212 引擎异常（搜索分支被丢弃）：ArrayIndexOutOfBoundsException: 2（user m03920，2026-11-20）
 
 ### 现象

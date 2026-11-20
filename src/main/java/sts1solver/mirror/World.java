@@ -238,6 +238,9 @@ public final class World {
         // window swaps anything in; uninstall() compares them (see LiveGuard). A window is allowed
         // to change its clones, not these objects -- a difference here is a real write to the game.
         LiveGuard.capture();
+        // B213 (user m00344): the career record is the one live object a simulated death used to
+        // write directly. Snapshot its numbers here, compare and put them back in uninstall().
+        CharStatGuard.capture();
         live = new Object[specs.length];
         liveColors = new float[specs.length][];
         livePrefData = new Object[specs.length];
@@ -385,6 +388,8 @@ public final class World {
         // B192 round 3: before anything is put back. StaticWatch's repair below would otherwise
         // mask exactly the write we are looking for.
         LiveGuard.verify();
+        // B213: before the statics go back, so a written stat field cannot outlive the window.
+        CharStatGuard.verify();
         if (failNextUninstall) {
             failNextUninstall = false;
             throw new RuntimeException("B110 gate: uninstall interrupted on purpose");

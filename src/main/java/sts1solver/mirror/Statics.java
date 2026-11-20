@@ -446,6 +446,17 @@ public final class Statics {
                 // each window (World.install).
                 sp.discardOnReadBack = true;
             }
+            if (sp.kind == Kind.VALUE
+                    && (("com.megacrit.cardcrawl.core.CardCrawlGame".equals(sp.owner.getName())
+                            && "playtime".equals(sp.name))
+                        || ("com.megacrit.cardcrawl.core.Settings".equals(sp.owner.getName())
+                            && "totalPlayTime".equals(sp.name)))) {
+                // B213: play time is wall-clock bookkeeping, not world state -- a fork must never
+                // carry a simulated minute back into the state cell it hands to the next node.
+                // (Today AbstractDungeon.update is not part of the driver, so nothing moves this;
+                // the discard keeps it true if a later step starts calling update.)
+                sp.discardOnReadBack = true;
+            }
             if (sp.kind == Kind.CONTAINER
                     && "com.megacrit.cardcrawl.unlock.UnlockTracker".equals(sp.owner.getName())) {
                 sp.discardOnReadBack = true;

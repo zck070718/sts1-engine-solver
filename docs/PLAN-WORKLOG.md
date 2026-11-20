@@ -3071,3 +3071,18 @@ user m03920「显示引擎异常，为什么」（面板红字 `9x ArrayIndexOut
 | 发布 1.0.12（2026-11-20 16:36） | 工坊 config.json（GBK/936 无 BOM，4,786 B，备份 config.json.bak-20261120d）：description 版本行 1.0.9 → 1.0.12、changeNote 换 1.0.12 文案，visibility 保持 public；content jar 换成本次构建（SHA256 F69978EC…，与已装一致）。上传输出 Successfully updated workshop item! | ✅ |
 | GitHub | 提交 c0afcf7「B212: size the probe answer array by the number of screens…」7 文件 +370/−21，tools/push-github.ps1 → PUSH OK | ✅ |
 | 实机验证 | 用户自测：同一局面重算不再出现 AIOOBE 红字；若仍「未找到胜线」，日志里的 `step … could not be walked` / `the same … screen … came back` 两行可定位具体牌/屏 | ⏳ 待实机 |
+## B213 模拟战斗改写实机职业生涯统计（2026-11-20）
+
+user m00005「查看sts1-engine-solver打完战斗统计角色场数和游戏时间增加的bug并给我解决方案但是不要动手」→ 只读定位并给出方案 → m00344「改」。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 取证 | `preferences` 五个文件（值都是字符串）：Silent PLAYTIME=31,866,996 / LOSE_COUNT=48,755（653.6 s/次）、Defect 90,259,412 / 84,187（1,072 s/次）、Watcher 137,588 / 344、Vagabond 481 / 350 / ENEMY_KILL=1,948,826、`STSSaveSlots` PLAYTIME=122,299,741；四个角色文件 mtime 同为 2026-11-20 16:35:03，而沙盒 `player-STSData*` 停在 11/15 与 11/3。`solver.log` 成片 `sandbox writes: dropped a sandbox preference save` ⇒ 写盘确实被拦，脏值只能来自实机对象被改 | ✅ |
+| 根因 | ①`ClonePolicy.shareClass` 通用规则 `com.megacrit.cardcrawl.screens.` ⇒ `!isSelectionScreen(n)` 把 `screens.stats.CharStat` 判共享 ⇒ 沙盒 `player.charStat` 指向实机对象；②`CharStat.incrementDeath()`（c-CharStat.txt:956-984）与 `incrementPlayTime(long)`（:1160-1177）先改字段再 `pref.putXxx + flush()`，`PlayerPrefs` 只重定向 Prefs、`World.uninstall` 只还原 Prefs，没有还原 CharStat 字段 ⇒ 模拟死亡计数留在实机，下一次真实结算 flush 进 `STSData<角色>`；③B25 只覆盖写盘、未覆盖内存字段，`PLAN-ISOLATION.md:111` 一直标 ⚠️ | ✅ |
+| 修法 | `ClonePolicy`：CharStat 判复制 + `shareFieldUncached` 让 `runs` 共享（否则每 fork 多拷 60 个 RunData ≈ +90 µs ≈ 单次求解 +25%）；新增 `mirror/CharStatGuard.java`（install 快照全部 primitive 字段 / uninstall 比对并写回旧值 + `career record guard (B213)` warn，干净时 5 分钟一行）；`World.install`/uninstall 各加一行调用；`Statics` 把 `CardCrawlGame.playtime`、`Settings.totalPlayTime` 标 `discardOnReadBack` | ✅ |
+| 代价 | +25~70 ms/次求解（0.3~0.9%，来自 CharStat 复制）；守卫约 3 µs/窗口（全量约十几毫秒）；内存百字节级/ fork；日志 5 分钟一行 | ✅ 已写 PLAN-BUGS |
+| 风险 | 求解代码从不读 CharStat（只命中注释）；`runs` 只读；守卫只在渲染线程同步比对，误伤≈0；回滚三处逐条还原；历史脏数据需关游戏后手改（`.backUp` 一起改或删） | ✅ 已写 PLAN-BUGS |
+| 构建/安装 | BUILD OK 146 源文件、565 entries、1,331,482 B；INSTALL OK sha256 `0E867FD5BBBB3BF81B2DC63CDE5374F74EC11A2AC265A21947507F7BF89B58A8`（未跑门禁，用户偏好自测） | ✅ |
+| 版本 | `resources/ModTheSpire.json` → 1.0.13；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.13 bullet（**工坊 `config.json` 未动，未上传**） | ✅ |
+| 文档 | PLAN-BUGS.md ## B213、PLAN.md 状态表 B213 行、本表 | ✅ |
+| 实机验证 | 由用户自测：①求解后统计页「场数/时间」不动；②正常结算一局后 `STSData<角色>` 只涨真实那一局；③若出现 `career record guard (B213): the window CHANGED` 把该行发出 | ⏳ 待实机 |

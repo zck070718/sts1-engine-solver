@@ -108,7 +108,7 @@ StaticWatch 比较相等、不写）。快照已关闭时 end() 写 null，Stati
 | 游戏 mixer 音效（`CardCrawlGame.sound`） | 会 | `SfxMute`（B65） | 见 B65 段 | ✅ |
 | HTTP / metrics 上传 | 会（死亡屏） | `ExternalMute`（`Gdx.net` 代理） | 见 B47 段 | ✅ |
 | 文件写入 / 存档重定向 | 会 | `ExternalMute`（`Gdx.files` 代理）、`SandboxWrites`、`PlayerPrefs`、`PrefsOverlay` | B136/B112 | ✅（逐项核对 B136 记录） |
-| 统计/成就类写盘 | 可能 | `Settings.UPLOAD_DATA=false`、`metricData.clearData()`（`World.install()`） | 无独立门禁 | ⚠️ 已知缺口（T4：只有 install 侧清表+关上传，没有「窗口内不写统计」门禁；新增统计写入须按 I3 补） |
+| 统计/成就类写盘 | 会（模拟死亡/模拟时长会走 `CharStat`） | `Settings.UPLOAD_DATA=false`、`metricData.clearData()`（`World.install()`）、`PlayerPrefs`（写盘重定向，B25）、**`CharStat` 按玩家复制 + `CharStatGuard` 快照/还原实机字段（B213）** | 无独立门禁（用户自测） | ✅ B213 已盖住职业生涯记录（场数/游戏时间/击杀/连胜）：`CharStat` 不再共享、实机字段在 install/uninstall 前后比对还原；仍未覆盖的是 Steam 成就（下一行）与 mod 自定义的统计写入 |
 | 鼠标输入 | 会 | `InputMute`（B37） | 见 B37 段 | ✅ |
 | 手牌发光队列 | 会 | `GlowReset`（B182） | 见 M47 | ✅ |
 | VFX / 粒子 / 渲染列表 | 会 | `VfxGuard`、`EffectSettle`、`RenderState` | 见对应段 | ✅ |

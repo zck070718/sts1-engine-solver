@@ -167,6 +167,17 @@ public final class ClonePolicy {
                 || n.equals("com.megacrit.cardcrawl.ui.DynamicBanner")) {
             return false;
         }
+        // B213 (user m00005): THE CAREER RECORD IS NOT COMBAT STATE. CharStat sits under
+        // screens.* below, i.e. it was SHARED, so every fork wrote the LIVE counters: a simulated
+        // death ran incrementDeath() / incrementPlayTime() straight on the player's own object
+        // (fields -> pref.put -> flush). PlayerPrefs only redirects the Prefs object, never those
+        // in-memory fields, so the dirty numbers stayed in the live game and the next real save
+        // flushed them into preferences\STSData<character> -- the reported "after a fight the stats
+        // screen shows more runs and more play time". The numbers are plain ints/longs, so copying
+        // costs one allocation and cannot change a search result (nothing in sts1solver reads it).
+        if (n.equals("com.megacrit.cardcrawl.screens.stats.CharStat")) {
+            return false;
+        }
         if (n.startsWith("com.megacrit.cardcrawl.screens.") || n.startsWith("com.megacrit.cardcrawl.ui.")) {
             return !isSelectionScreen(n);
         }
@@ -242,6 +253,14 @@ public final class ClonePolicy {
         if (owner.equals("com.megacrit.cardcrawl.map.MapRoomNode")) {
             String n = f.getName();
             return n.equals("parents") || n.equals("edges") || n.equals("fEffects");
+        }
+        if (owner.equals("com.megacrit.cardcrawl.screens.stats.CharStat")) {
+            // B213: the run history is READ-ONLY display data, and copying CharStat must not drag it
+            // along. The constructor fills the list with one RunData per file under
+            // runs\<slot>_<class>\ (60 files on this machine, 140 KB); a fork that deep-copied them
+            // would pay ~90 us per fork on a 233 us player clone -- ~2 s on an 8.3 s search (+25%).
+            // Nothing outside that constructor ever writes the list, so sharing it is safe.
+            return "runs".equals(f.getName());
         }
         return false;
     }
