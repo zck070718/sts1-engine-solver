@@ -4863,3 +4863,194 @@ src/main/java/sts1solver/drive/Driver.java：
 1. 打史莱姆王，开不限时计算跑够 15 分钟以上：不再卡死；日志里 `sandbox art: loaded=X disposed=Y` 的 X 与 Y 应相等（或只差当前窗口里正在用的那几份）。
 2. 结束后照常给出路线、自动出牌正常。
 3. 若仍然卡死：把最后 200 行日志发出来，重点看 `sandbox art` 行是否增长到很大而 disposed 不跟。
+
+## B202 药水/结束回合打开的选牌屏在自动出牌里不执行，且出牌时机不像人（user m00911 / m01245，2026-11-20）
+
+### 现象
+
+- user m00911：「改了确定之后像回合结束选牌、药水选牌都不能自动实现了，但是像头槌这样的选牌还能实现」。
+- user m01245 追加两条验收标准：①**只改自动出牌**，面板计算不动；②选牌屏出现后**不要立刻选**，像人一样等 0.几秒；
+  头槌这类选牌也要「等一下再点确定」。
+
+### 取证（读代码逐行核实）
+
+- `Gameplay.answerLatentSelection()` 原来第一句是 `if (pending != null) return;` —— 只有「这一步已经结算完」才会去答选牌屏。
+  而**药水**（`Gameplay.submitPotion` → `PotionDrink.drink`）与**结束回合**（`Gameplay.submit` 的 isEndTurn 分支）的选牌屏是在
+  这一步**还在 pending 时**由引擎自己的动作链打开的（实机同一帧跑完整条链），于是没人答；随后
+  `Gameplay.pollPending` 判定「这一屏计划里没有答案」→ `stopAutopilot(…)`，自动出牌停住。
+- 头槌能动，是因为它是「选中牌」步骤：答案走 `Action.selection` + `Gameplay.answerSelectionStep` 另一条链，不走上面那个早退。
+- 立刻选：实机路径 `Driver.answerLiveSelection` 在屏幕刚出来的那一帧就填选并 `AbstractDungeon.closeCurrentScreen()`；
+  沙盒路径 `Driver.pumpUntilSelection` 在屏幕已开但还没 `isAwaitingSelection()`（开屏动画未结束）时也会继续泵。
+
+### 修法（通用，不特判任何卡牌、遗物、药水）
+
+1. **屏就是一步，自动出牌负责答**：`Gameplay.answerLatentSelection()` 去掉 `pending == null` 这个前提，改成「选牌屏开着、这一帧轮到自动出牌就答」；
+   只有 `pending != null && Driver.settleBlock().isEmpty()`（这一步的引擎队列还没跑完）时才让这一步自己的答案路径先走。
+2. **答案优先级（m01364 修正后）**：先看这一步在计划里**有没有走选牌**（`plannedScreens() > 0` 或本步已答过屏），
+   - 有计划走过的屏 → 计划里这条链有答案（`pendingChoice`，**空串也算答案**）就用计划的；计划这一屏是空的
+     （沙盒 `expandScreens` 走的就是 `options.get(0)`）就按同样规则取**第一个选项**——即「计划自己走的那条线」，
+     而不是实机另选一张；日志写 `latent selection answered with [… (the plan's own answer | the first option, as the search does)]`。
+   - 计划这一步**根本没有记屏**（沙盒没看见这张屏：药水在搜索里没开屏、链比计划长一屏）→ 才用**这张屏自己的选项**
+     （`Driver.answerScreenFromItsOwnOptions()` → `resolveSelectionLiveHeuristically()`），日志写
+     `latent selection answered from the screen's own options`，同时用 `Driver.refuseSelection("no-plan-answer", …)` 留档。
+   **任何情况下都不会**拿计划点名的牌去顶替别的牌（P2-15/B49 的「拒绝猜」不变），也不会把「计划选空」改答成「选一张」。
+3. **等一拍再点**：新增 `Gameplay.selectionBeatDue()`，用 `AutoPace.delayMs()`（面板「节奏」按钮那个值，settings.txt `autoplayDelayMs`，默认 450ms）。
+   屏幕第一次出现那一帧只记时间戳、不动手；同类屏的后续帧按时钟比较是否到点（帧循环里不 sleep）。delay=0 回到旧行为，便于 A/B。
+   链式第二屏（头槌先弃牌堆再抽牌堆）重新计时，每一屏都有自己的一拍。
+4. **点确定**：计划里没有后续屏时保持原样 `closeCurrentScreen()`；新增 `Driver.confirmHandSelection()` / `Driver.confirmGridSelection()` 公开给自动出牌侧，
+   网格屏顺带保留 B151 的 `previousScreen` 归正。
+5. **别把等待当失败**：`Gameplay.pollPending` 在有屏且本步不是「结束回合且战斗已结束」时直接 return；`maybeAutopilot` 的失败计数在有屏时不累加。
+6. **沙盒侧不再抢帧**：`Driver.pumpUntilSelection` 开头在 `AbstractDungeon.isScreenUp` 时直接 return，开屏动画没播完不会被填选。
+
+### 代价
+
+- 时间：每个选牌屏多等一个节奏时长（默认 450ms；节奏设 0 时为 0）。一场 10 个选牌屏最多多约 4.5s。
+- 代码：`Gameplay.java` 约 +70 行（两个 helper + 两个字段 + 三处守卫），`Driver.java` 4 个公开薄方法 + `pumpUntilSelection` 3 行；无新设置键、无 API 变更、不改搜索与面板。
+- 内存：无。
+
+### 风险
+
+- **自动代答的边界**（m01364 收紧后）：只有「计划这一步根本没记屏」的屏才会被按屏自己的选项答掉；计划记过屏的一律走计划那条线，计划选空就选空。
+  仍然存在一种情况：计划里的屏数与实机不同（实机多出一屏），此时多出来的那一屏由屏自己的选项决定，而不是停住——这正是用户 m01245「不要卡住」的要求，
+  日志 `latent selection answered from the screen's own options` 是它出现的唯一证据。回滚：删掉 `answerLatentSelection` 里 `answerSelectionFromScreen()` 的两处调用。
+- **拍到脸上**：`pollPending` 放宽了「有屏时先不判」，若某个屏永远答不掉，自动出牌会一直等而不是报错停住。
+  `reportSettleWait` 与 `latent selection:` 日志仍在输出，能看出卡在哪一屏。
+- `selectionBeatDue` 按 `Driver.SelectionKind` 计时：链式里两类不同屏各自重新计时；同类的连续两屏只等一拍。
+
+### 对 mod 的实际影响
+
+- 面板：不变（面板计算在后台切片，不驱动游戏；本次只动自动出牌路径）。
+- 自动出牌：药水选牌、结束回合引发的选牌现在会等一拍再点并继续执行；头槌这类步骤选牌同样等一拍。
+- 日志：新增 `latent selection answered from the screen's own options` / `…(the screen opened inside a running step)` / `selection refused (no-plan-answer: …)`。
+- 其它 mod：不变（不碰其它队列，只在屏开着时推进这张屏自己的选择）。
+
+### 验证
+
+- 编译：`tools/build.ps1` BUILD OK（145 源文件、564 entries、1,322,435 B）。
+- 实机（待用户）：带药水进战斗开自动出牌，确认 ①屏出现约 0.5s 后才被点 ②自动继续而不是停住；再看头槌/弃牌类选牌同样「等一拍再关」。
+
+## B203 药水打开的选牌屏：计划要「打击+」、实机屏上只有「打击」，自动出牌停下（user m01393，2026-11-20）
+
+### 现象
+
+- 战斗示例：三祭品铁甲（Ironclad）打 Reptomancer + 两只匕首，计划 49 步，前 4 步（打击+、打击+、狂宴、绊倒）与沙盒
+  `step plays: live … || sandbox … || rng same` 完全一致；第 5 步是 `液态记忆（选：打击+ → 确定）`，前面 4 步都把一张打击升级过（燃烧之血/升级事件）。
+- 第 5 步之后没有 markers / step plays（该步没有「完成」），紧接 `settle wait: step 5/49`，然后：
+  `selection: 2 copies of Strike_R on offer and none carries the planned state (Strike_R+)`
+  → `selection refused (not-offered: the screen offers [Strike_R,Strike_R,Trip], the plan chose [Strike_R])`
+  → `live selection: the plan asks for Strike_R but the screen offers Strike_R,Strike_R,Trip; refusing to guess`
+  → `autopilot stopped: 选牌已应答，但等待中的动作没有取走这张牌（效果可能丢）；计划已保留`。
+
+### 取证
+
+- 引擎侧（javap）：`LiquidMemories.use` 只做 `addToBot(new BetterDiscardPileToHandAction(potency, 0))`；
+  该动作在**自己的 update() 里**调用 `GridCardSelectScreen.open(...)`。也就是说药水屏是「药水这一步之后、引擎链里」打开的，
+  打开时`pending` 还是药水那一步。
+- 计划里这一步的答案记的是 **Strike_R+**（沙盒弃牌堆里那张已升级的打击），实机屏上只有 2×Strike_R + Trip。
+  `Driver.matchOffered`（B200 之后 print 优先）**正确**地拒绝了「拿一张未升级的打击顶替」，所以这不是随机流问题，
+  也不是蛇眼问题——是**沙盒和实机在这一步之前的状态已经分叉**（谁升级了哪张打击）。
+- 真正暴露的缺口是：计划的答案**只记了「选了哪张」**，没有记「这屏当年提供的是哪些状态」。所以：①实机无法回答
+  「计划要的牌到底在不在这一屏」；②沙盒里`Driver.selectionOptions` 枚举出的选项、`resolveSelection(options.get(0))`
+  这个「取第一个选项」的点击**根本没有进入计划**——凡是计划里答案为空串的屏，实机当年是**猜**（best-first）的。
+
+### 修法（通用：记录屏提供的东西；不特判任何卡牌/遗物/药水）
+
+1. **计划里记下每屏提供过的状态**：`Solver.expandScreens` 在枚举选项前后各读一次
+   `Driver.printsOf(Driver.selectionCandidates())`，每个屏一格，'|' 连接，存进 `Choice.screenOffered` →
+   `Action.screenOffered`（`Solver.actionFor`）。分支（`expandCore` 的 combos 循环）沿用探针那一份：它读在作答之前，
+   任何分支答案下都一样。
+2. **实机侧同口径打印**：`Gameplay.answerNextScreen` 在点之前打一行
+   `screen i/n answer=[…] planState=[…] sandboxOffered=[…] liveOffered=[…]`，沙盒与实机的屏一眼可对。
+3. **删掉真猜**：`Gameplay.answerLatentSelection` 里「计划有屏、答案为空但计划没记这一屏」时原来回退到
+   `answerSelectionFromScreen()` → `Driver.resolveSelectionLiveHeuristically()`（按 cardValue 选最优一张）。这是
+   **搜索从未做过的规则**，已删除。
+4. **空链的替代规则改为沙盒同款**：`Driver.resolveSelectionLiveFirst(kind)` 取屏上**第一个选项**——与
+   `Solver.expandScreens` 的 `resolveSelection(options.get(0))` 完全同一条点击；屏上没有任何可选时拒绝（不猜）。
+   两处调用：`answerNextScreen` 遇到「这屏在计划里是空的」、`answerLatentSelection` 遇到「计划这一步根本没记屏」。
+5. **删幽灵函数**：`Gameplay.confirmOpenScreen()`（无调用点，且会把已选好的牌清掉）、`Driver.confirmHandSelection()`、
+   `Driver.confirmGridSelection()`、`Driver.answerScreenFromItsOwnOptions()`、`Driver.refuseSelection()` 全部删除。
+
+### 代价
+
+- 每屏多一次 `printsOf(selectionCandidates())`（纯字符串拼接，屏上至多十几张）：搜索侧每节点每屏一次，可忽略；
+  计划里每屏多存一份状态字符串（几十到几百字节）。
+- 实机每屏多一行 INFO 日志。
+
+### 风险
+
+- 「空答案 → 取第一个选项」在**计划记录了屏但没记选牌**时会让实机与沙盒走同一条线；如果沙盒当年的第一选项和实机屏的
+  第一选项顺序不同（屏幕枚举顺序本身由引擎决定，两侧同源），仍可能不同——此时 INFO 里的 `sandboxOffered`/`liveOffered`
+  就是证据。
+- 「计划这一步根本没记屏」时仍会用实机屏的第一个选项继续打；这一路径在 B202 已存在，本次只是把「猜最优」换成
+  「取第一个（沙盒规则）」，风险更低但不为零。回滚：删掉两处 `Driver.resolveSelectionLiveFirst` 调用即可。
+
+### 对 mod 的实际影响
+
+- 面板：不变（计划文本不变；`screenOffered` 不显示）。
+- 自动出牌：药水/结束回合开的选牌屏继续按计划答；计划没有的屏不再「按最优牌猜」，而是取第一个选项并记一条 WARN 说明原因。
+- 其它 mod：无专门判断；`printsOf` 走 `CardPrint`（已有反射兜底），mod 卡的字段变化同样被记录。
+
+### 验证
+
+- 用户自测（m00732：验收阶段由用户实机测，不自动跑门禁）。实机日志应出现
+  `screen 1/1 answer=[Strike_R] planState=[Strike_R+…] sandboxOffered=[…] liveOffered=[Strike_R…]`，
+  `sandboxOffered` 与 `liveOffered` 不一致即为状态分叉的证据。
+## B204 选牌答案记「状态 + 屏内第几张」，实机优先按状态认牌（user m01604 / m01614 / m01642，2026-11-20）
+
+### 现象
+
+- B203 之后自动出牌仍会在选牌屏停下：计划要的牌「状态对得上」，实机却报 `not-offered`，
+  用户 m01587 确认那一局屏上确实是**打击+**（不是状态分叉），说明拒绝的理由不在卡牌本身。
+- 用户 m01604 追问：能不能确定要选哪一张、能不能区分打击与打击+、两张打击+时会不会不知道选哪一张。
+
+### 取证
+
+- `Driver.selectionOptions` 枚举/去重用的是 `identityOf` → `CardPrint`（打击与打击+ 是两个不同选项），
+  但写进计划的答案 `choice = Driver.namesOf(...)` **只存 cardID**，升级状态在写计划那一刻就丢了。
+- 实机 `picksFor` 先用 cardID 找牌，再用计划的 `planState`（CardPrint）校验；两张同 cardID 的牌里
+  **没有一张的状态等于计划状态**时整体拒绝（B200 的防猜规则）⇒ 严格正确但过于粗：
+  计划其实指的是「那张已升级的打击」，实机屏上就有一张，却因为「同 ID 还有另一张」被判成对不上。
+- 游戏层面同状态的两张副本**不可区分**（同 cardID/升级/费用/数值，没有任何机制读「第几张」），
+  所以「两张打击+选哪一张」的答案是：两张等价，选任何一张结果都一样；需要区分的只是**状态**。
+
+### 修法（通用：状态 + 屏内序号；不特判任何卡牌/遗物）
+
+1. **计划答案带序号**：`Solver.expandScreens` 每屏用 `Solver.positionKeys(offered)` 建
+   「id@状态 → 第 k 个」表，`Solver.positionedIds(options.get(i))` / `Solver.positioned(parts, positions)`
+   把选项写成 `id@STATE#k`（k 从 1 起）。探针与分支都写 `Solver.joinSegments(screenPositions, …)`。
+2. **两侧按状态比对**：`Solver.stateRun(cards)` 把一屏候选按枚举顺序拼成「状态,状态,…」；
+   `Solver.positionsOn(planned, live, walked, liveStates, walkedStates)` 在两侧状态多重集相同
+   （只是槽位顺序不同，不可观测）时按状态匹配并丢掉 #k，返回 `id@STATE` 列表；
+   多重集不同则退回逐张 CardPrint + #k 校验，对不上返回 null（拒绝，不猜）。
+3. **实机侧重试后再拒绝**：`Gameplay.answerNextScreen` 算 `idsNow` 为 null 时最多重试 3 次
+   （`Driver.settleForReplay(8)`，屏一旦定型即停），仍为 null 才 `Driver.refuseNow("not-offered", …)`；
+   `executeStepInternal` 把 `action.replayLive = true`，`Solver.answerOneScreen(..., boolean live)`
+   只在**沙盒**侧宽松回退到只按状态/ID（沙盒拒绝等于白丢分支），实机侧绝不回退。
+4. **不再落到静默丢弃**：实机某步答案对不上时打 `selection answer does not fit: …` 并停自动出牌/置状态提示，
+   不再把待执行动作当成空转跳过。
+
+### 代价
+
+- 计划里每个选项多 `@状态` 与 `#k` 后缀（每屏几十到几百字节），`stateRun` 每屏一次纯字符串拼接。
+- 实机每屏最多多读 3 次候选（每次 `settleForReplay(8)`），只在「对不上」这一条异常路径上发生。
+- 新增一个 `transient` 标志 `Action.replayLive`，不参与记录/比较/digest。
+
+### 风险
+
+- 「状态多重集相同就按状态匹配」在两面同状态副本被交换时把单张身份抹平 —— 这是**有意**的：
+  交换两张不可区分的副本对后续没有任何影响（它们此后各自出牌才分叉，而那由 step plays 逐步对齐）。
+- 多重集不同时仍可能拒绝（如实停手并提示），这是保守方向，不会执行未验证的路线。回滚：删掉
+  `Solver.positionsOn` 的 5 参重载调用即可退回 B203 的逐张 CardPrint 行为。
+
+### 对 mod 的实际影响
+
+- 面板：计划文本不变。
+- 自动出牌：同一个「打击 vs 打击+」的屏现在能按状态选对；比计划多/少一种状态的屏会明确停下并给原因，不再静默跳过。
+- 其它 mod：无专门判断，全部走 `CardPrint`（已有反射兜底）。
+
+### 验证
+
+- 离线判据 `_tmp/b204/Check.java`（用 `java` 直接跑，不进游戏）：同状态换槽位→按状态解析；计划状态在实机屏出现次数更多
+  →拒绝；屏缺该状态→拒绝；旧计划无 #k→仍解析；槽位标记不可读→拒绝。8 条全 OK。
+- 构建：BUILD OK 145 源文件、564 entries、1,326,910 B；INSTALL OK sha256 10E7CD30216EC43F620470F8532A8563FC5FB2188313A4D7009244B27E00D464。
+- 实机由用户自测（m00732）；实机日志 `screen i/n answer=[…] planState=[…] sandboxOffered=[…] liveOffered=[…]` 可核。

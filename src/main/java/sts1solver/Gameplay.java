@@ -126,8 +126,18 @@ public final class Gameplay {
     private static int pendingScreens;
     /** B190: one screen kind per answered screen, '|' separated like {@link #pendingChoice}. */
     private static String pendingChoiceKinds = "";
+    /**
+     * B203 (user m01393): what the sandbox's screens held -- every card's state, in screen order,
+     * laid out like {@link #pendingChoice} ('|' per screen, ',' per card). Used to tell "the plan's
+     * card is on this screen" from "this screen is a different one".
+     */
+    private static String pendingChoiceOffered = "";
     /** Last "a screen is open and we have no answer" signature, logged once (m16202-5). */
     private static String latentLogged = "";
+    /** B202: when autoplay first saw the kind of pick screen that is open now (0 = none). */
+    private static long selectionSeenAt;
+    /** B202: which kind of pick screen {@link #selectionSeenAt} belongs to. */
+    private static Driver.SelectionKind selectionSeenKind;
     /** Last unanswerable card-screen signature (B71), logged once per screen+step. */
     private static String cardScreenLogged = "";
     /**
@@ -1591,6 +1601,10 @@ public final class Gameplay {
             return;
         }
         if (!Gameplay.executeStepInternal()) {
+            if (Driver.isAwaitingSelection() || AbstractDungeon.isScreenUp) {
+                // B202 (user m01245): waiting for the pick screen's beat is not a failure.
+                return;
+            }
             if (++autopilotFailures > 30) {
                 Gameplay.stopAutopilot("\u81ea\u52a8\u6267\u884c\u8fde\u7eed\u5931\u8d25 " + autopilotFailures + " \u6b21\uff1a" + status);
             }
@@ -2725,6 +2739,8 @@ public final class Gameplay {
         }
         try {
             Action action = step.action;
+            // B204 (user m01642): this IS the live game. Steps replayed in a sandbox stay false.
+            action.replayLive = true;
             if (action.isSelection()) {
                 // B162 (user m16041): answering the screen IS the step (the search planned it from a
                 // root where the screen was already open). Live clicks only: the sandbox path is
@@ -2952,17 +2968,28 @@ public final class Gameplay {
             // "答选牌（不选）": legal exactly when the planned screen is the one that is open.
             return true;
         }
+        // B204: the plan names a card as "id@STATE#k", where k is the copy's position on the screen
+        // the search walked. That position is only meaningful while the live screen presents the
+        // same distinct cards in the same order, so the answer is re-expressed as plain ids for the
+        // live enumeration -- a plan whose positions no longer line up is refused instead of
+        // answered with a shifted card.
+        String idsNow = sts1solver.search.Solver.positionsOn(ids,
+                sts1solver.search.Solver.positionedIds(Driver.selectionCandidates()),
+                Gameplay.firstSegment(action.screenOffered));
+        if (idsNow == null) {
+            return false;
+        }
         java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> offered = Driver.selectionCandidates();
         if (offered.isEmpty()) {
             return false;
         }
-        java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> chosen = Driver.picksFor(offered, ids,
+        java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> chosen = Driver.picksFor(offered, idsNow,
                 Gameplay.firstSegment(action.choiceDisplay),
                 Gameplay.firstSegment(action.choiceUuids),
                 Gameplay.firstSegment(action.choicePrints));
         // Every named card has to be offered: a stale plan that names three cards while the screen
         // shows one would answer a different question than the one it scored.
-        return chosen.size() == ids.split(",").length;
+        return chosen.size() == idsNow.split(",").length;
     }
 
     /** The first '|' separated entry of a planned answer chain, or "" (B86/B167). */
@@ -3252,18 +3279,74 @@ public final class Gameplay {
         String[] prints = choiceSegments(pendingChoicePrints);
         String[] moved = choiceSegments(pendingChoiceMoved);
         String[] movedUuids = choiceSegments(pendingChoiceMovedUuids);
+        String[] offered = choiceSegments(pendingChoiceOffered);
         int at = Math.min(pendingChoiceAt, screens - 1);
+        // B203 (user m01393): was the card this answer names ON the screen the sandbox walked? The
+        // live screen is asked the same question below; a "no" on either side is the evidence that
+        // the two walks are on different screens, and it is printed before any click.
+        String want = segmentAt(prints, at);
+        if (!want.isEmpty()) {
+            Log.info("screen " + (at + 1) + "/" + screens + " answer=[" + segmentAt(choices, at)
+                    + "] planState=[" + want + "]"
+                    + (offered.length > at && !offered[at].isEmpty()
+                            ? " sandboxOffered=[" + brief(offered[at]) + "]" : " sandboxOffered=-")
+                    + " liveOffered=[" + brief(Solver.stateRun(Driver.selectionCandidates())) + "]");
+        }
         String ids = segmentAt(choices, at);
+        String kindAt = segmentAt(kinds, at);
         boolean ok;
-        if (ids.trim().isEmpty() && !segmentAt(kinds, at).isEmpty()) {
+        boolean screenRead = ids.trim().isEmpty() && kindAt.isEmpty();
+        if (screenRead) {
+            // B203 (user m01393): the plan recorded this screen but not what it picked on it -- the ONE
+            // click the search still writes blindly, so there is nothing to replay here. Instead of a
+            // guess, take the click expandScreens makes: the first option of the screen, in the same
+            // enumeration order the search used. Driver refuses a screen with no option at all.
+            ok = Driver.resolveSelectionLiveFirst(kindAt);
+        } else if (ids.trim().isEmpty()) {
             // B190 (user m01149): the plan answered this screen with nothing -- pick nothing and
             // press 确定. Driver refuses it unless the picker itself allows zero picks; it never
             // guesses a card instead.
-            ok = Driver.resolveSelectionLiveEmpty(segmentAt(kinds, at));
+            ok = Driver.resolveSelectionLiveEmpty(kindAt);
         } else {
-            ok = Driver.resolveSelectionLive(ids, segmentAt(displays, at),
-                    segmentAt(uuids, at), segmentAt(prints, at), segmentAt(moved, at),
-                    segmentAt(movedUuids, at));
+            // B204 (user m01614): the recorded answer carries "id@STATE#k" -- which copy of a card,
+            // not just which card. Re-express it against the LIVE enumeration: same distinct cards in
+            // the same order means the k still names the same copy; anything else is refused (a
+            // refused answer stops autopilot and keeps the plan), never silently re-pointed.
+            // "not-offered: …" (B204) means the screen is up but its enumerations do not line up, so
+            // there is nothing to lose by waiting: refuse, and let the caller's settle window retry
+            // (a screen the engine is still filling has one copy back, then two -- exactly the case
+            // the search never sees, because the sandbox only reads a screen once it is complete).
+            // Any other "!" is a real answer to a screen that IS complete: the step must stop.
+            // The screen surfaced for comparison are STATE runs (Solver.stateRun), not card for card:
+            // on the live side the cards come out of selectionCandidates(), on the planned side the
+            // sandbox recorded the same list when it walked the screen.
+            String firstRead = "";
+            String walked = offered.length > at ? offered[at] : "";
+            String liveStates = Solver.stateRun(Driver.selectionCandidates());
+            String idsNow = Solver.positionsOn(ids, Solver.positionedIds(Driver.selectionCandidates()),
+                    walked, liveStates, walked);
+            for (int attempt = 0; idsNow == null && attempt < 3; attempt++) {
+                if (Driver.settleForReplay(8) == Driver.SelectionKind.NONE) {
+                    break;
+                }
+                liveStates = Solver.stateRun(Driver.selectionCandidates());
+                idsNow = Solver.positionsOn(ids, Solver.positionedIds(Driver.selectionCandidates()),
+                        walked, liveStates, walked);
+                if (firstRead.isEmpty() && Driver.lastSelectionFailure().startsWith("not-offered: ")) {
+                    firstRead = Driver.lastSelectionFailure();
+                }
+            }
+            if (idsNow == null) {
+                Driver.refuseNow("not-offered", "the plan names [" + ids
+                        + "] but the live screen offers different cards in another order ("
+                        + brief(Solver.positionedIds(Driver.selectionCandidates())) + ")"
+                        + (firstRead.isEmpty() ? "" : "; first read said " + firstRead));
+                ok = false;
+            } else {
+                ok = Driver.resolveSelectionLive(idsNow, segmentAt(displays, at),
+                        segmentAt(uuids, at), segmentAt(prints, at), segmentAt(moved, at),
+                        segmentAt(movedUuids, at));
+            }
         }
         if (ok) {
             if (pendingChoiceAt + 1 < screens) {
@@ -3292,6 +3375,8 @@ public final class Gameplay {
         pendingChoiceMovedUuids = action.movedUuids == null ? "" : action.movedUuids;
         // B190: the screens this step answered, including the ones it answered with nothing.
         pendingChoiceKinds = action.screenKinds == null ? "" : action.screenKinds;
+        // B203: what the sandbox saw on those screens, compared with what the live screen offers.
+        pendingChoiceOffered = action.screenOffered == null ? "" : action.screenOffered;
         pendingScreens = Math.max(Action.chainCount(action.choice),
                 Action.chainCount(pendingChoiceKinds));
         pendingChoiceAt = 0;
@@ -3306,6 +3391,7 @@ public final class Gameplay {
         pendingChoiceMoved = "";
         pendingChoiceMovedUuids = "";
         pendingChoiceKinds = "";
+        pendingChoiceOffered = "";
         pendingScreens = 0;
         pendingChoiceAt = 0;
     }
@@ -3332,6 +3418,29 @@ public final class Gameplay {
         return Gameplay.answerNextScreen();
     }
 
+    /**
+     * B203: a comma separated state list with a ",+N" tail, so a twenty-card screen cannot turn one
+     * log line into twenty.
+     */
+    private static String brief(String states) {
+        if (states == null || states.isEmpty()) {
+            return "";
+        }
+        String[] all = states.split(",", -1);
+        int max = 10;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < all.length && i < max; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(all[i]);
+        }
+        if (all.length > max) {
+            sb.append(",+").append(all.length - max);
+        }
+        return sb.toString();
+    }
+
     /** "防御 → 打击（2/2）" -- what the answered screen(s) look like in the panel. */
     private static String choiceSegmentText() {
         String[] displays = choiceSegments(pendingChoiceDisplay);
@@ -3349,44 +3458,80 @@ public final class Gameplay {
         return text;
     }
 
+    /**
+     * B202 (user m01245): the pick screen is answered by the autopilot whenever it is open -- not
+     * only between two steps.
+     *
+     * <p>Before this, the answer only ran when {@code pending == null}, i.e. after the step that
+     * opened the screen had already been checked. A potion or an end turn runs to its picker INSIDE
+     * the engine's own chain, so its screen was up while the step was still pending and nothing
+     * touched it: the autopilot stopped with "\u8fd9\u4e00\u5c4f\u8ba1\u5212\u91cc\u6ca1\u6709\u7b54\u6848".
+     *
+     * <p>B202 correction (user m01364): the WALK of a screen belongs to the side that walks it. A
+     * plan that HAS screens recorded answers them itself; the search enumerated the options in the
+     * sandbox and took the first one, so the plan and the board stay one mechanism. Only where the
+     * plan recorded no screen for this step -- the sandbox never saw a picker there (a potion the
+     * search drank without one, a chain that came out longer) -- does the screen's own options
+     * decide, because no plan answer exists to be wrong.
+     *
+     * <p>An EMPTY answer is not a missing answer: "answer the pick with nothing" is a chain entry
+     * the search wrote (it picked nothing), and asking for a card there changes what the pick does.
+     * Cards are never fitted to a screen: the planned cards must be offered as planned, or the
+     * step reports the mismatch (P2-15/B49). The click happens one autoplay beat after the screen
+     * appeared ({@link #selectionBeatDue()}), so it reads like a player, not like a frame.
+     */
     private static void answerLatentSelection() {
         try {
-            if (pending != null) {
-                return;
-            }
+            Driver.SelectionKind kind = Driver.selectionKind();
             boolean open = Driver.isAwaitingSelection()
-                    || Driver.selectionKind() == Driver.SelectionKind.REWARD;
+                    || kind == Driver.SelectionKind.REWARD;
             if (!open) {
                 latentLogged = "";
                 return;
             }
-            String planned = pendingChoice == null ? "" : pendingChoice;
-            // B190: an answer that picks nothing is still an answer; only "the plan answered no
-            // screen here at all" is a difference to report.
-            if (planned.isEmpty() && Gameplay.choiceScreenCount() == 0) {
-                String sig = Driver.selectionKind() + "|" + Driver.namesOf(Driver.selectionCandidates());
-                if (!sig.equals(latentLogged)) {
-                    latentLogged = sig;
-                    Log.info("selection open with no planned answer: kind=" + Driver.selectionKind()
-                            + " candidates=" + sig.substring(sig.indexOf('|') + 1)
-                            + " autopilot=" + autopilot
-                            + " | step=" + step + "/" + (plan == null || plan.plan == null ? 0 : plan.plan.size())
-                            + " | last plays: " + sts1solver.mirror.PlayTrace.recent(8));
-                }
+            if (pending != null && Driver.settleBlock().isEmpty()) {
+                // The step still has the engine's queue to itself; its own answer path runs first.
                 return;
             }
             if (!autopilot) {
                 return;
             }
-            if (answerNextScreen()) {
-                status = "\u9009\u724c\uff1a" + choiceSegmentText();
-                Hud.set(Gameplay.lines());
-                Log.info("latent selection answered with [" + choiceSegmentText() + "]"
-                        + " (the screen opened after its step had been checked)");
+            if (!Gameplay.selectionBeatDue()) {
                 return;
             }
-            Log.warn("latent selection: could not answer " + planned
-                    + " (kind=" + Driver.selectionKind() + ")");
+            // B202 (user m01364): the plan walks the screens wherever it recorded any -- an empty
+            // recorded answer included. Answering those here would make the live fight take a
+            // branch the plan never chose.
+            String planned = pendingChoice == null ? "" : pendingChoice;
+            boolean planWalksScreens = (pending != null && Gameplay.plannedScreens() > 0)
+                    || Gameplay.choiceScreenCount() > 0;
+            if (planWalksScreens) {
+                boolean ok = answerNextScreen();
+                if (ok) {
+                    status = "\u9009\u724c\uff1a" + choiceSegmentText();
+                    Hud.set(Gameplay.lines());
+                    Log.info("latent selection answered with [" + choiceSegmentText() + "]"
+                            + " (the plan's own answer; the screen opened inside a running step)");
+                } else {
+                    Log.warn("latent selection: could not answer " + planned
+                            + " (kind=" + Driver.selectionKind() + "; " + Driver.lastSelectionFailure() + ")");
+                }
+                return;
+            }
+            // B202 (user m01364) + B203 (user m01393): the plan recorded no screen for this step at all
+            // (a potion the search drank without seeing a picker, a chain that came out longer live).
+            // There is no answer to be wrong, so the click is the one the search makes on every screen
+            // it walks: the first option. NOT the best card -- that is a rule the search never applied.
+            if (Driver.resolveSelectionLiveFirst(Driver.selectionKind() == null
+                    ? "" : Driver.selectionKind().name())) {
+                status = "\u9009\u724c\uff1a" + choiceSegmentText();
+                Hud.set(Gameplay.lines());
+                Log.info("latent selection: the plan recorded no screen for this step; took the first option"
+                        + " (the same click the search makes on every screen it walks)");
+                return;
+            }
+            Log.warn("latent selection: the open screen could not be answered ("
+                    + Driver.lastSelectionFailure() + ")");
         } catch (Throwable t) {
             Log.warn("latent selection: " + t);
         }
@@ -3614,6 +3759,22 @@ public final class Gameplay {
                 return;
             }
             boolean answered = answerNextScreen();
+            if (!answered && Driver.lastSelectionFailure().startsWith("not-offered: ")) {
+                // B204 (user m01642): the screen is up and complete, but the plan's answer names a
+                // copy it does not carry the same way. Clicking anything here would run a branch the
+                // plan never chose, so stop -- the same rule the no-answer case above follows.
+                String why = "\u8fd9\u4e00\u5c4f\u9009\u724c\u8ba1\u5212\u91cc\u7684\u7b54\u6848\u5bf9\u4e0d\u4e0a\uff08\u540c\u540d\u724c\u7684\u5b9e\u673a\u987a\u5e8f\u4e0e\u8ba1\u5212\u4e0d\u540c\uff09\uff1b\u81ea\u52a8\u51fa\u724c\u5df2\u505c\u4e0b\uff0c\u8bf7\u4f60\u9009\uff0c\u9009\u5b8c\u70b9\u300c\u81ea\u52a8\u300d\u7ee7\u7eed";
+                Log.warn("selection answer does not fit: " + Driver.lastSelectionFailure()
+                        + " | plan=[" + planned + "] liveOffered=["
+                        + brief(Solver.positionedIds(Driver.selectionCandidates())) + "]");
+                if (autopilot) {
+                    Gameplay.stopAutopilot(why);
+                } else {
+                    status = why;
+                    Hud.set(Gameplay.lines());
+                }
+                return;
+            }
             if (answered) {
                 status = "\u9009\u724c\uff1a" + choiceSegmentText();
                 Hud.set(Gameplay.lines());
@@ -3668,6 +3829,13 @@ public final class Gameplay {
         // could be counted, so the panel ended up saying "执行中" for a fight that was already won.
         boolean endTurnEndedFight = Gameplay.pending.action.isEndTurn()
                 && Gameplay.fightFinished();
+        // B202 (user m01245): a pick screen this step opened is answered by answerLatentSelection,
+        // which runs before this check in the same frame. One still up here means the step is not
+        // done yet (its answer did not take, or the beat has not come), so it must not be judged,
+        // reported or dropped as if its board were final.
+        if (!endTurnEndedFight && (Driver.isAwaitingSelection() || AbstractDungeon.isScreenUp)) {
+            return;
+        }
         // B157 (user m14819): a live turn PAST the one the sandbox measured is not a finished step.
         // It means the two worlds already disagree about the turn count, so every number the panel
         // shows from here on would be made up. Stop and wait for the player -- this replaces the B126
@@ -4123,6 +4291,46 @@ public final class Gameplay {
         return verified;
     }
 
+    /**
+     * B202 (user m01245): when autoplay may touch the open pick screen -- a fraction of a second
+     * AFTER it appeared, at the same beat the plan uses between two actions.
+     *
+     * <p>Answering on the first frame the screen is up read as "the mod clicks before I can see it".
+     * The wait is a clock comparison on the frame loop (never a sleep), keyed on the screen itself:
+     * the first frame the same kind of screen is seen starts the beat, so a second screen of a chain
+     * starts its own. Delay 0 means "answer on the first frame" (the pre-B202 behaviour), kept so
+     * the A/B is possible.
+     */
+    private static boolean selectionBeatDue() {
+        int delay = sts1solver.ui.AutoPace.delayMs();
+        if (delay <= 0) {
+            return true;
+        }
+        Driver.SelectionKind kind = Driver.selectionKind();
+        if (kind == null || kind == Driver.SelectionKind.NONE) {
+            selectionSeenAt = 0L;
+            return true;
+        }
+        long now = now();
+        if (selectionSeenAt == 0L || kind != selectionSeenKind) {
+            selectionSeenAt = now;
+            selectionSeenKind = kind;
+            return false;
+        }
+        return sts1solver.ui.AutoPace.due(now, selectionSeenAt + delay);
+    }
+
+    /**
+     * B202 (user m01245): the plan answered no screen here -- pick one live, from THIS screen.
+     *
+     * <p>The sandbox records an answer per screen it walked; a screen the plan does not cover (a
+     * potion the search drank without seeing a picker, an end turn whose chain came out one screen
+     * longer) used to stop the autopilot. Enumerating the screen's own options and replaying the
+     * first is the same walk the search makes in the sandbox (Solver.expandScreens takes
+     * options.get(0) of its options), so the live board and the plan stay one mechanism. The answer
+     * is logged as a live selection with no planned answer, which is the evidence a later report
+     * reads.
+     */
     /** Player-facing text for a refusal; the raw reason stays in English in the log. */
     private static String refusalText(String reason) {
         if ("not in combat".equals(reason)) {

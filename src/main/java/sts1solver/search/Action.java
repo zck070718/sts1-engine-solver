@@ -136,6 +136,30 @@ public final class Action {
     public String screenKinds = "";
 
     /**
+     * B203 (user m01393): what each answered screen OFFERED -- the state of every card on it, in the
+     * order the screen listed them, '|' between screens and ',' inside one. Empty on a step the search
+     * expanded before this was recorded, or on a screen with no cards.
+     *
+     * <p>An answer names a card; whether that card EXISTS to be taken is a separate fact, and only the
+     * screen that was walked can say it. Without this, a plan that picked "the Strike this branch
+     * upgraded" could not be told apart from a plan that picked "a Strike, which happened to be the
+     * other copy on the live screen", and the live walk answered with a card the sandbox may not have
+     * offered at all.
+     */
+    public String screenOffered = "";
+
+    /**
+     * B204 (user m01642): true while this step is being replayed against the LIVE game.
+     *
+     * <p>The plan's answers are written as "state#position". Re-expressing them for the screen
+     * that is open can fail, and a refusal costs different things on the two sides: on the live
+     * game it only stops the autopilot and keeps the plan (the player can recompute), while in a
+     * sandbox branch it throws a perfectly good world away. Runtime only -- never recorded, never
+     * compared, never hashed into a digest.
+     */
+    public transient boolean replayLive;
+
+    /**
      * B162 (user m16041): the KIND of screen this step ANSWERS ("HAND", "GRID", "REWARD"), or "".
      *
      * <p>A selection screen used to be answered inside the step that opened it, so the search could

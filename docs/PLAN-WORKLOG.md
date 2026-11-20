@@ -2931,3 +2931,40 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 
 **重传（用户 m00822「上传创意工坊不要改mod可见性，简介更新中文区」）**：`mod-uploader.jar` 的 `Uploader.updateItemInfo` 无条件 `setItemDescription`，只有 `visibility` 为空串才跳过 `setItemVisibility`；`WorkshopUploadConfiguration` 省略该键会退回默认 `private`、取值不在 {private, friends, friendsonly, public} 里会 `Main.exit(1)` —— 所以「不改可见性」只能把 config 写成条目当前的真实值。经用户确认条目为公开后，`config.json` 的 `visibility` 由 `private` 改为 `public`（备份 `config.json.bak-20261119b`，GBK/936 无 BOM，4894 B），description 未再改动（已是中文 1.0.6 版），重传返回「Successfully updated workshop item!」（日志 `_tmp/upload-workshop-1.0.6-public.log`）。
 
+
+## B202 自动出牌：药水/结束回合的选牌屏自己答，且等一拍再点（user m00911 / m01245，2026-11-20）
+
+| 步骤 | 内容 | 结果 |
+| --- | --- | --- |
+| 取证 | `Gameplay.answerLatentSelection()` 原首句 `if (pending != null) return;`；药水/结束回合的屏在 pending 期间由引擎同帧打开；`pollPending` 判「这一屏计划里没有答案」并 `stopAutopilot`；头槌走 `Action.selection` 另一条链 | 已核实（PLAN-BUGS B202） |
+| 改 `Gameplay.java` | `answerLatentSelection` 去掉 pending 前提、加 `selectionBeatDue()` 等待、加 `answerSelectionFromScreen()`（屏自己选项 + `no-plan-answer` 记录）；`pollPending` 与 `maybeAutopilot` 失败计数在有屏时不再判失败；新增字段 `selectionSeenAt` / `selectionSeenKind` | ✅ |
+| 改 `Driver.java` | 新增 `refuseSelection` / `answerScreenFromItsOwnOptions` / `confirmHandSelection` / `confirmGridSelection`；`pumpUntilSelection` 在 `AbstractDungeon.isScreenUp` 时不再泵 | ✅ |
+| 编译 | `tools/build.ps1` → BUILD OK，145 源文件、564 entries、1,322,435 B | ✅ |
+| 安装 | `tools/install.ps1 -SkipBuild` → INSTALL OK，sha256 3D1E5F67…F032C272 | ✅ |
+| 复审（user m01364） | 用户问「计划没有答案的屏被按屏自己的选项答完」是什么意思：旧实现把「计划这一屏选空」与「计划没有这一屏」混成一件事，空答案会被改答成选一张。已收紧：计划记过屏就按计划那条线（空答案保持空；计划这一屏空着则取 `options.get(0)`，与沙盒 `expandScreens` 同规则），只有计划这一步根本没记屏才用屏自己的选项 | ✅ |
+| 重编译/重装 | BUILD OK 1,322,552 B；INSTALL OK，sha256 CEE16EB2…7B9756 | ✅ |
+| 实机 | 需要用户实测：药水选牌、结束回合选牌会等约 0.5s 再点并继续执行；头槌同样等待 | ⏳ 待用户 |
+| 门禁 | 按 m00732 不跑 | — |
+
+节奏键沿用既有 `settings.txt` 的 `autoplayDelayMs`（面板「节奏」按钮，默认 450ms，0 表示不等），未新增设置项。
+
+## B203 药水选牌屏：记录屏提供的状态 + 删猜牌回退（user m01393，2026-11-20）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 日志取证 | 09:33:16 连续四条：`2 copies of Strike_R on offer and none carries the planned state (Strike_R+)` → `selection refused (not-offered … the plan chose [Strike_R])` → `refusing to guess` → `autopilot stopped: 选牌已应答，但等待中的动作没有取走这张牌`；第 5 步（液态记忆）没有 markers/step plays | ✅ |
+| 根因 | 计划答案记的是升级过的打击（Strike_R+），实机屏上是 2 张未升级打击 + 绊倒：沙盒/实机在之前就分叉；计划未记录「屏当年提供了什么」，且空答案的屏实机靠 best-first 猜 | ✅ |
+| 代码 | `Solver.expandScreens`+`expandCore`+`Choice.screenOffered`+`Action.screenOffered`；`Action.withChoice` 只拷贝 kinds 不拷贝 offered（合流点）→ `Solver.actionFor` 补 `a.screenOffered = choice.screenOffered`；`Gameplay.planPendingChoice/clearPendingChoice` 维护 `pendingChoiceOffered`；`answerNextScreen` 打 `screen i/n … sandboxOffered/liveOffered` 并走 `resolveSelectionLiveFirst`；`answerLatentSelection` 空链也走 first-option；`Driver.resolveSelectionLiveFirst` 新增 | ✅ |
+| 删幽灵函数 | `Gameplay.confirmOpenScreen`、`Gameplay.answerSelectionFromScreen`、`Driver.confirmHandSelection`、`Driver.confirmGridSelection`、`Driver.answerScreenFromItsOwnOptions`、`Driver.refuseSelection`（全工程 grep 0 命中） | ✅ |
+| 构建/安装 | BUILD OK 1,323,131 B；INSTALL OK，sha256 1F2ED62276B6A54DD6752853F8B10EE09B58B5C449E146233322276200176230 | ✅ |
+| 实机验证 | 用户自测：日志里 `sandboxOffered`/`liveOffered` 不一致 = 状态分叉证据 | ⏳ 待实机 |
+## B204 选牌答案记「状态 + 屏内第几张」，实机优先按状态认牌（user m01604 / m01614 / m01642，2026-11-20）
+
+## 项 | 内容 | 状态
+
+- 现象 | B203 之后仍会在选牌屏 `not-offered` 停下，用户 m01587 确认那局屏上确实是打击+（不是状态分叉） | ✅
+- 根因 | 计划答案 `Driver.namesOf` 只存 cardID，升级状态丢失；实机 `picksFor` 用 cardID 找到两张同 ID、却没有任何一张带计划状态 ⇒ 整体拒绝 | ✅
+- 代码 | `Solver.positionKeys/positionedIds/positioned/joinSegments(positions,…)`（答案写 `id@STATE#k`）；`Solver.stateRun`；`Solver.positionsOn` 5 参重载（状态多重集相同→按状态匹配、丢 #k）；`Gameplay.answerNextScreen` 重试 3 次后 `Driver.refuseNow`；`Gameplay.executeStepInternal` 置 `action.replayLive=true` 并在对不上时停手提示；`Solver.answerOneScreen(..., boolean live)` 只在沙盒回退；`Action.replayLive`（transient） | ✅
+- 离线判据 | `_tmp/b204/Check.java` 8 条（同状态换槽位、多副本、缺状态、旧计划、坏槽位标记）全 OK；javac 0 error | ✅
+- 构建/安装 | BUILD OK 145 源文件 564 entries 1,326,910 B；INSTALL OK sha256 10E7CD30216EC43F620470F8532A8563FC5FB2188313A4D7009244B27E00D464 | ✅
+- 实机验证 | 由用户自测；日志 `screen i/n answer=… planState=… sandboxOffered=… liveOffered=…` | ⏳ 待实机

@@ -1977,7 +1977,7 @@ public final class Driver {
      * search kept whichever copy came first. Cards are compared by what they ARE ({@link
      * sts1solver.mirror.CardPrint}), which is also the key the plan and both engines resolve by.
      */
-    private static String identityOf(java.util.List<AbstractCard> cards) {
+    static String identityOf(java.util.List<AbstractCard> cards) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < cards.size(); i++) {
             if (i > 0) {
@@ -2452,16 +2452,42 @@ public final class Driver {
             // different hands, and the divergence only shows up turns later as a phantom cost. Refuse
             // the whole answer instead; the callers already report "not-offered" and stop.
             String want = nameAt(prints, i);
+            String bare = ids[i].trim();
+            int cut = bare.lastIndexOf('#');
+            if (cut > 0) {
+                bare = bare.substring(0, cut).trim();
+            }
             if (want != null && !want.isEmpty() && !carriesPrint(candidates, used, want)
-                    && countUnusedId(candidates, used, ids[i].trim()) > 1) {
-                Log.warn("selection: " + countUnusedId(candidates, used, ids[i].trim()) + " copies of "
-                        + ids[i].trim() + " on offer and none carries the planned state (" + want + ")");
+                    && countUnusedId(candidates, used, bare) > 1) {
+                Log.warn("selection: " + countUnusedId(candidates, used, bare) + " copies of "
+                        + bare + " on offer and none carries the planned state (" + want + ")");
                 return new java.util.ArrayList<AbstractCard>();
             }
             // used[] keeps duplicate ids (a hand-select that discards two Strikes) honest: the same
             // physical card can be chosen once, never twice.
-            AbstractCard pick = matchOffered(candidates, used, ids[i].trim(), nameAt(names, i),
-                    nameAt(uuids, i), want);
+            //
+            // B204 (user m01614): "id@STATE#k" names the k-th copy of that STATE on the screen. Two
+            // Strikes+ are the same card to the game (same id, same upgrade, same numbers), but the
+            // k the search wrote still says WHICH of them it clicked, so a plan never degrades into
+            // "some card with this id". The k is a position in the screen's own enumeration, so it is
+            // only used while the screen still presents the very same distinct cards, in the same
+            // order; any change falls through to the state / identity matchers below.
+            String raw = ids[i].trim();
+            int hash = raw.lastIndexOf('#');
+            String position = null;
+            if (hash > 0) {
+                try {
+                    Integer.parseInt(raw.substring(hash + 1).trim());
+                    position = raw;
+                    raw = raw.substring(0, hash).trim();
+                } catch (NumberFormatException notAPosition) {
+                    position = null;
+                }
+            }
+            AbstractCard pick = position == null ? null : atPosition(candidates, used, position);
+            if (pick == null) {
+                pick = matchOffered(candidates, used, raw, nameAt(names, i), nameAt(uuids, i), want);
+            }
             if (pick != null) {
                 used[candidates.indexOf(pick)] = true;
                 chosen.add(pick);
@@ -2471,6 +2497,50 @@ public final class Driver {
     }
 
     /** Does an unused candidate carry exactly this state fingerprint? (B200) */
+    /**
+     * B204 (user m01614): the k-th copy of a STATE in the screen's enumeration ("Strike_R+|c=1/1#2").
+     *
+     * <p>Two copies of one card are the same card to the game -- same id, same upgrade, same numbers --
+     * so a plan written in ids or states cannot say WHICH copy the search clicked, and the two
+     * engines can then hold the same multiset in a different order (the cost a card carries under
+     * Snecko Eye is bound to that copy). The position is the only thing that survives, and it is
+     * stable as long as the screen offers the very same distinct cards in the same order -- which is
+     * exactly what a fork of the live game and the live game itself do. When that does not hold, this
+     * returns null and the caller falls back to matching by state, then by id.
+     */
+    private static AbstractCard atPosition(java.util.List<AbstractCard> candidates, boolean[] used,
+                                           String idAndPosition) {
+        int hash = idAndPosition.lastIndexOf('#');
+        if (hash <= 0 || candidates == null) {
+            return null;
+        }
+        int k;
+        try {
+            k = Integer.parseInt(idAndPosition.substring(hash + 1).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        String id = idAndPosition.substring(0, hash).trim();
+        int at = 0;
+        for (int j = 0; j < candidates.size(); j++) {
+            AbstractCard c = candidates.get(j);
+            if (c == null || c.cardID == null
+                    || !id.startsWith(c.cardID)
+                    || id.length() > c.cardID.length() && id.charAt(c.cardID.length()) != '|') {
+                continue;
+            }
+            String state = sts1solver.mirror.CardPrint.of(c);
+            if (!id.equals(state) && !id.equals(c.cardID)) {
+                continue;
+            }
+            at++;
+            if (at == k) {
+                return used != null && used[j] ? null : c;
+            }
+        }
+        return null;
+    }
+
     private static boolean carriesPrint(java.util.List<AbstractCard> candidates, boolean[] used,
                                         String print) {
         for (int k = 0; k < candidates.size(); k++) {
@@ -2579,9 +2649,31 @@ public final class Driver {
         return selectionFailure;
     }
 
+    /**
+     * B204 (user m01614): "id@STATE" per card, in the screen's own enumeration order -- the shape
+     * {@link sts1solver.search.Solver#positionsOn} maps a plan's positions onto.
+     */
+    public static String positionedIds(java.util.List<AbstractCard> cards) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; cards != null && i < cards.size(); i++) {
+            AbstractCard c = cards.get(i);
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(c == null ? "?" : c.cardID).append('@')
+                    .append(c == null ? "?" : sts1solver.mirror.CardPrint.of(c));
+        }
+        return sb.toString();
+    }
+
     /** How many engine updates the last {@link #settleForReplay} spent (diagnostics). */
     public static long lastSettlePumps() {
         return settlePumps;
+    }
+
+    /** Records a refusal found OUTSIDE this class (the live walk), so the caller reads one failure. */
+    public static void refuseNow(String kind, String detail) {
+        refused(kind, detail);
     }
 
     private static void refused(String kind, String detail) {
@@ -2850,6 +2942,38 @@ public final class Driver {
             chosen.add(best.get(i));
         }
         return answerLiveSelection(chosen, namesOf(chosen));
+    }
+
+    /**
+     * B203 (user m01393): answer the open screen the way the SEARCH walks it -- the first option.
+     *
+     * <p>The sandbox takes exactly one click per screen it walks ({@code Solver.expandScreens}:
+     * {@code resolveSelection(options.get(0))} over {@code selectionOptions(...)}), so "the plan
+     * records the screen but not the pick" has one live equivalent, and it is this one -- not "the
+     * best card", which is a different rule the search never made and which picks a card the plan
+     * did not assume. Nothing here decides WHICH card is good: the order is the screen's own.
+     */
+    public static boolean resolveSelectionLiveFirst(String kindLabel) {
+        selectionFailure = "";
+        SelectionKind kind = selectionKind();
+        if (kind == SelectionKind.NONE) {
+            refused("not-settled", "no select screen is open");
+            return false;
+        }
+        java.util.List<AbstractCard> candidates = selectionCandidates();
+        if (candidates == null || candidates.isEmpty()) {
+            refused("not-offered", "the screen offers nothing to take (" + selectionState() + ")");
+            return false;
+        }
+        AbstractCard pick = candidates.get(0);
+        refused("plan-recorded-no-pick", "the plan recorded the " + kindLabel + " screen but not its pick;"
+                + " taking " + pick.cardID + ", the first option, as the search does");
+        Log.info("live selection: first option [" + pick.cardID + "] state="
+                + sts1solver.mirror.CardPrint.of(pick) + " of [" + brief(candidates, 10) + "]"
+                + " (the plan recorded no pick for this screen)");
+        java.util.List<AbstractCard> one = new java.util.ArrayList<AbstractCard>();
+        one.add(pick);
+        return answerLiveSelection(one, pick.cardID);
     }
 
     /**
@@ -3173,6 +3297,12 @@ public final class Driver {
      * @return true when a screen is open now
      */
     public static boolean pumpUntilSelection(int maxFrames) {
+        if (AbstractDungeon.isScreenUp) {
+            // B202 (user m01245): a screen that is UP but not yet "awaiting" (its open animation is
+            // still running, selectedCards not filled in) used to be pumped through -- the click
+            // landed on the frame it appeared. Leave the frame to the screen's own update.
+            return true;
+        }
         if (isAwaitingSelection()) {
             return true;
         }

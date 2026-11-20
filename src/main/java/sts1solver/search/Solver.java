@@ -942,6 +942,11 @@ public final class Solver {
      * played by itself while that answer resolved. Both loop copies (the blocking portfolio and the
      * sliced session) go through here so a choice can never inherit another branch's auto-plays.
      */
+    // B204: the per-screen state positions of the branch that is being built (expandCore fills it,
+    // actionFor reads it when it copies the answer onto the step). One expansion runs at a time.
+    private static java.util.List<java.util.Map<String, String>> screenPositions =
+            new java.util.ArrayList<java.util.Map<String, String>>();
+
     private static Action actionFor(Choice choice, Action action) {
         // B190 (user m01149): a step that answered a screen with NOTHING still has an answer -- the
         // click on 确定. It used to be folded away entirely (no label, no cached answer), so the
@@ -952,6 +957,8 @@ public final class Solver {
         a.autoPlays = new ArrayList<String>(choice.autoPlays);
         // B140 (user m09491): the answer travels with the KIND of screen it was written on.
         a.screenKinds = choice.screenKinds;
+        // B203: the same for what those screens offered -- the states every branch's screens held.
+        a.screenOffered = choice.screenOffered;
         return a;
     }
 
@@ -971,6 +978,9 @@ public final class Solver {
         java.util.List<java.util.List<String>> uuids = new java.util.ArrayList<java.util.List<String>>();
         java.util.List<java.util.List<String>> prints = new java.util.ArrayList<java.util.List<String>>();
         java.util.List<String> kinds = new java.util.ArrayList<String>();
+        // B203 (user m01393): what each screen OFFERED, one entry per screen, laid out exactly like the
+        // plan's answer chain so the live walk can compare entry by entry.
+        java.util.List<String> offeredPrints = new java.util.ArrayList<String>();
         // B184: the six profile counters were declared and read but never written, so the slice
         // profile line could only ever print zeros. Charge the real spans here -- one node is exactly
         // fork + install + apply + readBack + digest + uninstall, which is also the split the slow
@@ -1009,7 +1019,9 @@ public final class Solver {
                 Legal.apply(action);
                 Solver.profile.apply += System.nanoTime() - applyStart;
             }
-            complete = expandScreens(ids, displays, uuids, prints, kinds, n);
+            screenPositions = new java.util.ArrayList<java.util.Map<String, String>>();
+            complete = expandScreens(screenPositions, ids, displays, uuids, prints, kinds,
+                    offeredPrints, n);
             if (applyNow && action != null) {
                 action.turnAfter = Solver.turnAfterOf(action.turnBefore);
                 if (sts1solver.mirror.DiscoveryRandom.count() != rngBefore) {
@@ -1020,11 +1032,12 @@ public final class Solver {
                     action != null && action.isCard(),
                     action != null ? action.cardName : "",
                     playedBefore, Solver.cardsPlayedNames());
-            probe.choice = Solver.joinSegments(ids, 0);
+            probe.choice = Solver.joinSegments(screenPositions, Solver.joinSegments(ids, 0));
             probe.choiceDisplay = Solver.joinSegments(displays, 0);
             probe.choiceUuids = Solver.joinSegments(uuids, 0);
             probe.choicePrints = Solver.joinSegments(prints, 0);
             probe.screenKinds = Solver.joinStrings(kinds);
+            probe.screenOffered = Solver.joinScreens(offeredPrints);
             probeWorld.trimPresentation();
             long readBackStart = System.nanoTime();
             probeWorld.readBack();
@@ -1122,11 +1135,15 @@ public final class Solver {
                     w.trimPresentation();
                     w.readBack();
                     Solver.readChoice(choice);
-                    choice.choice = Solver.joinSegments(ids, pick);
+                    choice.choice = Solver.joinSegments(screenPositions,
+                            Solver.joinSegments(ids, pick));
                     choice.choiceDisplay = Solver.joinSegments(displays, pick);
                     choice.choiceUuids = Solver.joinSegments(uuids, pick);
                     choice.choicePrints = Solver.joinSegments(prints, pick);
                     choice.screenKinds = Solver.joinStrings(branchKinds);
+                    // B203: the states the screens offered are the same for every branch -- they were
+                    // read before any answer -- so each branch carries the probe's list.
+                    choice.screenOffered = Solver.joinScreens(offeredPrints);
                     out.add(choice);
                 }
             } catch (Throwable t) {
@@ -1190,8 +1207,9 @@ public final class Solver {
             if (action != null) {
                 Legal.apply(action);
             }
-            Solver.expandScreens(ids, displays, uuids, prints,
-                    new java.util.ArrayList<String>(), n);
+            Solver.expandScreens(new java.util.ArrayList<java.util.Map<String, String>>(),
+                    ids, displays, uuids, prints,
+                    new java.util.ArrayList<String>(), new java.util.ArrayList<String>(), n);
             out.add("digest: " + Digest.stable(Digest.ofCurrent()));
         } catch (Throwable t) {
             Solver.noteExpandFailure(t);
@@ -1233,11 +1251,13 @@ public final class Solver {
      * @param uuids    filled with, per screen, the uuids of each option
      * @param n        the caller's option count request (a floor for the settings tier)
      */
-    private static boolean expandScreens(java.util.List<java.util.List<String>> ids,
+    private static boolean expandScreens(java.util.List<java.util.Map<String, String>> screenPositions,
+                                        java.util.List<java.util.List<String>> ids,
                                         java.util.List<java.util.List<String>> displays,
                                         java.util.List<java.util.List<String>> uuids,
                                         java.util.List<java.util.List<String>> prints,
-                                        java.util.List<String> kinds, int n) {
+                                        java.util.List<String> kinds,
+                                        java.util.List<String> offeredPrints, int n) {
         int maxScreens = Math.max(1, Limits.screens());
         for (int s = 0; s < maxScreens; s++) {
             if (!Driver.pumpUntilSelection(24)) {
@@ -1259,8 +1279,22 @@ public final class Solver {
             java.util.List<String> screenDisplays = new java.util.ArrayList<String>();
             java.util.List<String> screenUuids = new java.util.ArrayList<String>();
             java.util.List<String> screenPrints = new java.util.ArrayList<String>();
+            // B203 (user m01393): the STATE of every card the picker offers, read once with the
+            // option list it came from (the order candidates are enumerated in is the order of this
+            // string, and that is the index a screenStates entry names).
+            java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> offered =
+                    Driver.selectionCandidates();
+            // B204: the STATE run (not the card-by-card print list) is what a live screen is compared
+            // with: same states in any order is the same screen.
+            offeredPrints.add(Solver.stateRun(offered));
+            // B204 (user m01614): the plan's answer names a card as "id@STATE#k" -- the k-th copy of
+            // that state in THIS enumeration. Two copies of one card are indistinguishable to the
+            // game, so the state alone leaves "which one" unanswered and the live answer used to take
+            // whichever copy came first; the position is what the search actually clicked.
+            java.util.Map<String, String> seen = Solver.positionKeys(offered);
+            screenPositions.add(seen);
             for (int i = 0; i < options.size(); i++) {
-                screenIds.add(Driver.namesOf(options.get(i)));
+                screenIds.add(Solver.positionedIds(options.get(i)));
                 screenDisplays.add(Driver.displayNamesOf(options.get(i)));
                 screenUuids.add(Driver.uuidsOf(options.get(i)));
                 // B98: the state each option carries, the identity a replay can still resolve after
@@ -1317,8 +1351,9 @@ public final class Solver {
         try {
             probeWorld.install();
             installed = true;
-            Solver.expandScreens(ids, displays, uuids, prints,
-                    new java.util.ArrayList<String>(), n);
+            Solver.expandScreens(new java.util.ArrayList<java.util.Map<String, String>>(),
+                    ids, displays, uuids, prints,
+                    new java.util.ArrayList<String>(), new java.util.ArrayList<String>(), n);
         } catch (Throwable t) {
             Solver.noteExpandFailure(t);
             World.forceRestore();
@@ -1431,6 +1466,215 @@ public final class Solver {
     }
 
     /** One option index per screen, joined with '|' -- the machine form of a chain answer. */
+    private static String joinSegments(java.util.List<java.util.List<String>> byScreen, int[] pick,
+                                      java.util.List<java.util.Map<String, String>> positions) {
+        if (positions == null) {
+            return Solver.joinSegments(byScreen, pick);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < byScreen.size(); i++) {
+            if (i > 0) {
+                sb.append('|');
+            }
+            java.util.List<String> screen = byScreen.get(i);
+            if (screen == null || screen.isEmpty()) {
+                continue;
+            }
+            int at = pick == null ? 0 : Math.min(Math.max(pick[i], 0), screen.size() - 1);
+            String one = screen.get(at) == null ? "" : screen.get(at);
+            // B204: each id of this option is followed by the position of that very card in the
+            // screen's enumeration, so a plan answers with "which copy", not with "a card like this".
+            String[] parts = one.isEmpty() ? new String[0] : one.split(",");
+            sb.append(Solver.positioned(parts, positions != null && positions.size() > i
+                    ? positions.get(i) : null));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * B204 (user m01614): "id@STATE#k" per id, where k is how many cards of that state this screen
+     * has listed so far (1-based). Two Strikes+ are the same card to the game, so the state names the
+     * kind and k names the copy.
+     */
+    public static String positionedIds(java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> cards) {
+        return Driver.positionedIds(cards);
+    }
+
+    /**
+     * B204: the distinct states of one screen in enumeration order, "state,state,...".
+     *
+     * <p>The live screen and the screen the search walked are compared by this alone, NOT card by
+     * card. Two same-state copies are identical to the game (same card, same numbers) -- the
+     * engine's removal is order-preserving and nothing reads "which copy", so they are one choice
+     * in two slots. A card for card comparison calls a screen "different" when the engine merely
+     * filled its slots in another order (hand order after a rebuild), which is no difference at all.
+     */
+    public static String stateRun(java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> candidates) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < candidates.size(); i++) {
+            com.megacrit.cardcrawl.cards.AbstractCard c = candidates.get(i);
+            sb.append(i > 0 ? "," : "").append(c == null ? "?" : sts1solver.mirror.CardPrint.of(c));
+        }
+        return sb.toString();
+    }
+
+    /** The state positions of a screen's candidates, in enumeration order (B204). */
+    static java.util.Map<String, String> positionKeys(
+            java.util.List<com.megacrit.cardcrawl.cards.AbstractCard> candidates) {
+        java.util.Map<String, String> keys = new java.util.HashMap<String, String>();
+        for (int i = 0; i < candidates.size(); i++) {
+            com.megacrit.cardcrawl.cards.AbstractCard c = candidates.get(i);
+            String state = c == null ? "?" : sts1solver.mirror.CardPrint.of(c);
+            Integer seen = keys.containsKey(state) ? Integer.valueOf(keys.get(state)) + 1
+                    : Integer.valueOf(1);
+            keys.put(state, String.valueOf(seen));
+        }
+        return keys;
+    }
+
+    /**
+     * B204 (user m01614): the plan's positioned answer ("id@STATE#k,..."), re-expressed for the
+     * screen that is open NOW -- same distinct cards in the same order as the ones the search
+     * walked, so the k names the same copy. Returns plain ids ready to match, or null when the two
+     * enumerations do not line up (the caller then refuses instead of taking a shifted card).
+     *
+     * <p>Nothing here knows about a card or a relic: it compares two enumerations of the same screen.
+     *
+     * <p>B204 rework (user m01642): when the caller also knows the screen's states in enumeration
+     * order ({@code walked} = the search's, {@code liveStates} = the live screen's), a screen that
+     * merely lists the same states in another order is NOT a different screen -- which copy sits in
+     * which slot is unobservable -- so the answer is filled by state and the slot detail is
+     * dropped. Only a different multiset of states refuses.
+     */
+    public static String positionsOn(String planned, String live, String walked) {
+        return Solver.positionsOn(planned, live, walked, null, null);
+    }
+
+    /** {@link #positionsOn(String, String, String)} with both surfaces compared by state run. */
+    public static String positionsOn(String planned, String live, String walked,
+                                     String liveStates, String walkedStates) {
+        if (planned == null || planned.isEmpty()) {
+            return null;
+        }
+        String[] want = planned.split(",");
+        String[] here = live == null || live.isEmpty() ? new String[0] : live.split(",");
+        String[] before = walked == null || walked.isEmpty() ? new String[0] : walked.split(",");
+        boolean sameSurface = sameStates(here, liveStates, walkedStates);
+        if (sameSurface) {
+            StringBuilder byState = new StringBuilder();
+            for (int i = 0; i < want.length; i++) {
+                String entry = want[i].trim();
+                int hash = entry.lastIndexOf('#');
+                String base = hash < 0 ? entry : entry.substring(0, hash).trim();
+                if (Solver.nthOfState(here, base, 1) == null) {
+                    return null;
+                }
+                byState.append(i > 0 ? "," : "").append(base);
+            }
+            return byState.toString();
+        }
+        boolean checkShape = here.length == before.length;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < want.length; i++) {
+            String entry = want[i].trim();
+            int hash = entry.lastIndexOf('#');
+            if (hash < 0) {
+                // An answer recorded before positions existed (a plan carried over from an older
+                // build) keeps its old meaning: id and state only.
+                sb.append(i > 0 ? "," : "").append(entry);
+                continue;
+            }
+            int k;
+            try {
+                k = Integer.parseInt(entry.substring(hash + 1).trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+            String positionedNow = Solver.nthOfState(here, entry.substring(0, hash).trim(), k);
+            if (positionedNow == null) {
+                return null;
+            }
+            if (checkShape && !entry.substring(0, hash).trim().equals(
+                    Solver.nthOfState(before, entry.substring(0, hash).trim(), k))) {
+                // The k-th copy of that state is a different card on the live screen than it was on
+                // the walked one: the enumeration moved, so the position no longer means anything.
+                return null;
+            }
+            sb.append(i > 0 ? "," : "").append(positionedNow);
+        }
+        return sb.toString();
+    }
+
+    /** B204: do the two surfaces hold the same state multiset (a different order is no difference)? */
+    private static boolean sameStates(String[] here, String liveStates, String walkedStates) {
+        if (here.length == 0 || liveStates == null || liveStates.isEmpty()
+                || walkedStates == null || walkedStates.isEmpty()
+                || !liveStates.equals(Solver.stateRunOf(here))) {
+            return false;
+        }
+        String[] a = liveStates.split(",");
+        String[] b = walkedStates.split(",");
+        if (a.length != b.length) {
+            return false;
+        }
+        String[] sa = (String[])a.clone();
+        String[] sb = (String[])b.clone();
+        java.util.Arrays.sort(sa);
+        java.util.Arrays.sort(sb);
+        return java.util.Arrays.equals(sa, sb);
+    }
+
+    /** The states of "id@STATE" entries, in their order ("id@STATE#k" -> "STATE"). */
+    private static String stateRunOf(String[] entries) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < entries.length; i++) {
+            String entry = entries[i].trim();
+            int hash = entry.lastIndexOf('#');
+            String base = hash < 0 ? entry : entry.substring(0, hash).trim();
+            int at = base.indexOf('@');
+            sb.append(i > 0 ? "," : "").append(at < 0 ? base : base.substring(at + 1));
+        }
+        return sb.toString();
+    }
+
+    /** The "id@STATE#k" of the k-th entry of {@code listed} whose prefix is {@code idAndState}. */
+    private static String nthOfState(String[] listed, String idAndState, int k) {
+        int at = 0;
+        for (int j = 0; j < listed.length; j++) {
+            String entry = listed[j].trim();
+            int hash = entry.lastIndexOf('#');
+            String base = hash < 0 ? entry : entry.substring(0, hash);
+            if (base.equals(idAndState)) {
+                at++;
+                if (at == k) {
+                    return entry;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** {@link #positionedIds} entries with the "#k" of their state appended (B204). */
+    static String positioned(String[] parts, java.util.Map<String, String> positions) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i];
+            if (i > 0) {
+                sb.append(',');
+            }
+            int at = part.indexOf('@');
+            if (at < 0 || positions == null) {
+                sb.append(part);
+                continue;
+            }
+            String state = part.substring(at + 1);
+            String k = positions.get(state);
+            sb.append(part).append('#').append(k == null ? "1" : k);
+        }
+        return sb.toString();
+    }
+
+    /** The old form (ids only), kept for the callers that never answer a screen (B204). */
     private static String joinSegments(java.util.List<java.util.List<String>> byScreen, int[] pick) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < byScreen.size(); i++) {
@@ -1443,6 +1687,22 @@ public final class Solver {
             }
             int at = pick == null ? 0 : Math.min(Math.max(pick[i], 0), screen.size() - 1);
             sb.append(screen.get(at) == null ? "" : screen.get(at));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * B203: '|' per screen, nothing between them -- for a list that already has one entry per screen
+     * (the states every card a screen offered). No index is applied: a screen is its whole option list.
+     */
+    private static String joinScreens(java.util.List<String> perScreen) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < perScreen.size(); i++) {
+            if (i > 0) {
+                sb.append('|');
+            }
+            String one = perScreen.get(i);
+            sb.append(one == null ? "" : one);
         }
         return sb.toString();
     }
@@ -1460,6 +1720,29 @@ public final class Solver {
             }
             int at = Math.min(Math.max(pick, 0), screen.size() - 1);
             sb.append(screen.get(at) == null ? "" : screen.get(at));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The same for a chain whose summary string the caller already built ('|' per screen, ',' per
+     * option): each option gets the "#k" of its state appended (B204). No index list is needed --
+     * the caller already decided which options these are.
+     */
+    private static String joinSegments(java.util.List<java.util.Map<String, String>> positions,
+                                       String joined) {
+        String[] screens = Solver.segments(joined);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < screens.length; i++) {
+            if (i > 0) {
+                sb.append('|');
+            }
+            String one = screens[i];
+            if (one.isEmpty()) {
+                continue;
+            }
+            sb.append(Solver.positioned(one.split(","),
+                    positions != null && positions.size() > i ? positions.get(i) : null));
         }
         return sb.toString();
     }
@@ -2397,7 +2680,11 @@ public final class Solver {
                 }
             }
             Solver.checkScreenKind(Solver.at(Solver.segments(a.screenKinds), 0), a, 1);
-            Solver.answerOneScreen(a.choice, a.choiceDisplay, a.choiceUuids, a.choicePrints, a);
+            Solver.answerOneScreen(Solver.positionsOn(a.choice,
+                            Driver.positionedIds(Driver.selectionCandidates()),
+                            Solver.firstScreen(a.screenOffered)),
+                    a.choice, a.choiceDisplay, a.choiceUuids, a.choicePrints, a,
+                    Boolean.TRUE.equals(a.replayLive));
             Solver.checkChainFinished(a, 1);
             return;
         }
@@ -2418,8 +2705,11 @@ public final class Solver {
                         + " fight opened no more (" + Driver.selectionState() + ")");
             }
             Solver.checkScreenKind(Solver.at(kinds, i), a, i + 1);
-            Solver.answerOneScreen(choices[i], Solver.at(displays, i), Solver.at(uuids, i),
-                    Solver.at(prints, i), a);
+            Solver.answerOneScreen(Solver.positionsOn(choices[i],
+                            Driver.positionedIds(Driver.selectionCandidates()),
+                            Solver.at(Solver.segments(a.screenOffered), i)),
+                    choices[i], Solver.at(displays, i), Solver.at(uuids, i), Solver.at(prints, i), a,
+                    Boolean.TRUE.equals(a.replayLive));
         }
         Solver.checkChainFinished(a, choices.length);
     }
@@ -2463,15 +2753,31 @@ public final class Solver {
     }
 
     /** Answers exactly one screen with one recorded answer, retrying once after a settle. */
-    private static void answerOneScreen(String choice, String display, String uuids, String prints,
-                                        Action a) {
-        if (Driver.resolveSelectionByNames(choice, display, uuids, prints)) {
+    private static void answerOneScreen(String resolved, String recorded, String display, String uuids,
+                                        String prints, Action a, boolean live) {
+        // B204 (user m01614): "resolved" is the recorded answer re-expressed for the screen that is
+        // open (positions resolved); null means the two enumerations do not line up.
+        String fail = resolved == null
+                ? "not-offered: the line's recorded answer [" + recorded
+                        + "] names a copy this screen does not enumerate the same way" : null;
+        // B204 (user m01642): "state + position + throw the line away" is only safe where a refusal
+        // costs nothing -- a live answer can stop and ask for a recompute. In the sandbox a refusal
+        // also costs the branch, so it keeps today's behaviour (state only, then id): the fork came
+        // from the live game, so its first copy of a state IS the live game's first copy.
+        if (resolved == null && !live) {
+            resolved = recorded;
+        }
+        if (resolved == null) {
+            Driver.refuseNow("not-offered", fail.substring("not-offered: ".length()));
+            throw new ReplayException("not-offered", "the line cannot be replayed: " + fail);
+        }
+        if (Driver.resolveSelectionByNames(resolved, display, uuids, prints)) {
             return;
         }
         String first = Driver.lastSelectionFailure();
         Driver.SelectionKind after = Driver.settleForReplay(16);
         if (after != Driver.SelectionKind.NONE
-                && Driver.resolveSelectionByNames(choice, display, uuids, prints)) {
+                && Driver.resolveSelectionByNames(resolved, display, uuids, prints)) {
             Log.info("replay selection: answered " + Solver.describeChoice(a) + " after settling "
                     + Driver.lastSettlePumps() + " update(s) (first try said " + first + ")");
             return;
@@ -2488,6 +2794,12 @@ public final class Solver {
             return new String[0];
         }
         return joined.split("\\|", -1);
+    }
+
+    /** The first '|' separated entry of a plan chain ("" -> ""). */
+    private static String firstScreen(String joined) {
+        String[] parts = Solver.segments(joined);
+        return parts.length == 0 ? "" : parts[0];
     }
 
     /** Element {@code i} of an array that may be shorter than the chain. */
@@ -3385,6 +3697,12 @@ public final class Solver {
         String choicePrints = "";
         /** B140 (user m09491): the KIND of screen each answer was given on, '|' joined. */
         String screenKinds = "";
+        /**
+         * B203 (user m01393): what each of those screens OFFERED, the state of every card in the order
+         * the screen listed them, '|' between screens -- the sandbox's side of the question "was the
+         * card the plan wants even on this screen?".
+         */
+        String screenOffered = "";
         /**
          * B135 (user m07728): the cards the fight played by itself while THIS branch's answer
          * resolved. Per branch, because the answer decides which card gets auto-played.
