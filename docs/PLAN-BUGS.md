@@ -5054,3 +5054,58 @@ src/main/java/sts1solver/drive/Driver.java：
   →拒绝；屏缺该状态→拒绝；旧计划无 #k→仍解析；槽位标记不可读→拒绝。8 条全 OK。
 - 构建：BUILD OK 145 源文件、564 entries、1,326,910 B；INSTALL OK sha256 10E7CD30216EC43F620470F8532A8563FC5FB2188313A4D7009244B27E00D464。
 - 实机由用户自测（m00732）；实机日志 `screen i/n answer=[…] planState=[…] sandboxOffered=[…] liveOffered=[…]` 可核。
+
+
+## B205 回放「answered 1 of 36 recorded screen(s)」+ 计划答案去掉屏内第几张（user m01995，2026-11-20）
+
+### 现象
+
+- 用户 m01995 原话：「1.看日志为什么回放不通过？应该是刚刚更新的原因。2.选牌选第几张这种东西不要写在面板上，面板和之前一样就可以。写进计划，不要乱动面板」。
+- `solver.log` 2026-11-20 10:47:13（第 10919 行）：`WARN plan replay failed at step 6: sts1solver.search.ReplayException: the line cannot be replayed: the step answered 1 of 36 recorded screen(s) and the fight opened no more (screen=NONE numCardsToSelect=0 upTo=false canPickZero=false anyNumber=false wereCardsRetrieved=true numSelected=0 kind=NONE awaiting=false)`。
+- 同一条线（10922）报 `the printed line is shorter than the one the search found (replayed 6 of 36 steps, first failure at 6 …)`；自动出牌侧 10941/10943/10944 报 `这条线重放不通过（第 14 步：坚毅+（1) 选：羽化 → 确定 2) 选：c=2/2 → 确定 3) 选：m=0 …）`。
+- 面板后果：任何一次「打开多张屏、其中含一张没有状态记录（c=2/2、m=0、rarity=RARE…）」的步骤，计划文本都被写成 36 段点击脚本；且实机大舍牌一旦打到第 2 屏就判线不可回放，自动出牌整条线被丢弃。
+
+### 取证：36 段不是真的 36 张屏
+
+- 快照屏（大舍牌 = `GridSelectScreen.open` 的 upTo/任意张）在沙盒里只回答**一次**：`Solver.expandScreens` 每屏 `Driver.resolveSelection(options.get(0))`，`Driver.resolveSelection` 先 `fillHandSelection`/`fillGridSelection` 再 `closeHandSelection`/`closeGridScreen` 并 `drainAfterAnswer()`，一次单击就关屏。
+- 计划里的段数 = `Math.max(Action.chainCount(choice), Action.chainCount(screenKinds))`（`Action.withChoice`）。B203 记的是「状态」、B204 记的是「id@STATE」：只有卡牌条目带 `@STATE`（`Solver.stateRun`/`CardPrint`），其它选项是 `c=2/2`、`m=0`、`rarity=RARE` 这类**没有状态**的条目。
+- 于是 `(c=2/2)` 里的 `2/2` 被 `Action.chainCount` 当成 `'|'` 的兄弟分隔符数出第 2 屏，`(m=0)`、`(t=NORMAL)`、`(c=2/2…m=…d=…b=…g=…h=…r=…x=…)` 同理 —— 屏的「状态」文本里带着 `CardPrint.appendExtras` 的字段名与数值，正是这些内容让一段变成 36 段。**这是 B203/B204 把状态写进计划答案引出的格式缺陷**（用户判断「应该是刚刚更新的原因」成立）。
+- 第 1 屏答案本身是对的（`选：死亡收割 → 确定`，引擎读完牌、牌屏正常关闭，state 显示 `wereCardsRetrieved=true`），所以第 1 屏回答后引擎不再开屏，第 2 段起核对失败 ⇒ `answered 1 of 36`。
+
+### 根因（两层）
+
+1. **计划答案与面板文本共用一根 `|` 分隔串**：`Action.choice` 既是回放的机器答案，又被 `Action.withChoice` 的 `clickScript` 拿去打印。任何含 `|` 的内容（状态指纹）都会同时污染回放解析与面板。
+2. **B204 的 #k 槽位本身就是面板噪音**，而且它对「选哪张」没有增益：同状态的两张副本在游戏里不可区分（同 cardID/升级/数值，引擎删除保序，没有任何机制读「第几张」），B204 已用 `sameStates` 把这层结论写进代码；唯一的用途是让 1.0.7 旧计划能按槽位回放。
+
+### 修法（通用，不特判卡牌/遗物）
+
+- `Solver.expandScreens`：`screenIds.add(Driver.namesOf(options.get(i)))` —— **计划答案回到纯 id**（面板文本与 1.0.6 及以前一致：`选：死亡收割 → 确定`）。删除 `screenPositions` 静态字段、`positionKeys`、`positioned`、`joinSegments(positions,…)`、`joinSegments(byScreen,int[],positions)` 与本轮在 `picksFor` 里没有落地的半成品（不留幽灵函数）。
+- 哪些副本仍由 `Action.screenOffered`（B203 的「每屏提供了哪些状态」）承担，只在 `Solver.positionsOn` 里做比较，**从不写进计划答案**。
+- `Solver.positionsOn`：无 `#k` 的答案条目原样返回（由 `picksFor` 既有的 状态→uuid→id 匹配处理）；`#k` 条目（1.0.7 旧计划）仍按「k 号同状态副本 + 两侧枚举形状一致」解析，否则返回 null 拒绝 —— 旧计划继续可回放，但不会再手写槽位。状态多重集相同（只顺序不同）时按状态匹配并丢弃 `#k`（`baseOf`）。
+- `Driver.picksFor`：`#k` 条目只有在条目自带状态与计划记录的 `choicePrints[i]` 一致时才允许按槽位解析（`ownState`/`sameState`，`atPosition(..., wantState)`），对不上就落到状态/id 匹配 —— 旧计划的槽位不会落到别的牌上。
+- `Solver.answerForReplay` 两条路径（单屏与链）都传入 `Driver.stateRunOf(Driver.selectionCandidates())` 与记录的状态串，让「同卡不同顺序」被认作同一屏；此前只传三个参数，`sameStates` 永远返回 false，这个分支在回放里等于不存在。
+- 新增 `Driver.stateRunOf(List<AbstractCard>)`；`checkChainFinished` 与 `chain-unfinished` 的错误文本追加引擎当前状态（`Driver.handScreenSummary()` / `selectionState()`），下次再断链能直接从一行日志看出「屏在哪一排没开」。
+
+### 代价
+
+- 计划文本从 `选：Strike_R+|c=1/1#2` 变回 `选：打击+`，每条计划的字符数下降（日志与面板都变短）；`Action.choice` 不再带 `@STATE`/`#k`，回放解析少一层切分。
+- 性能：`stateRunOf` 每屏每节点一次（与 `CardPrint.of` 同量级，十几~几十 μs），且只在屏上卡数不为 0 时调用；删掉的 `positionKeys`/`positioned` 是等量级的开销，净变化≈0。回放新增的 `Driver.stateRunOf` 调用只发生在一屏作答时，不随检索时长增长。
+- 复杂度：`positionsOn` 多一个 `baseOf`/`positional` 分支；`picksFor` 多一个 `ownState`/`sameState` 判断；删掉 4 个无用函数、1 个静态字段，代码总量净减少。
+
+### 风险
+
+- 同状态两张副本在游戏里不可区分 ⇒ 回放取哪一张对后续状态没有影响（B204 已论证），去掉 `#k` 不会让计划与实机分叉。
+- 1.0.7 旧计划里的 `#k` 仍可回放，但若旧计划的 `choicePrints` 缺失（老 B200 时代先于 B204 的计划），`#k` 会因 `sameState(decided)` 不成立而退回按状态匹配 —— 与 1.0.6 行为一致，不会错选到别的牌。
+- `screenOffered`（B203 的诊断字符串）本轮**保留**，它只在未记录的配置里出现；如用户不想在日志里看到状态串，可另开一条把它从日志/计划里彻底拿掉（不影响回放正确性）。
+- 回滚：`git revert` 本提交即可回到 1.0.7（带 `#k` 的计划格式）；已安装的 jar 可由 `tools/install.ps1` 重装旧 jar。
+
+### 对 mod 的实际影响
+
+- 面板：选牌步骤恢复成「选：<卡名> → 确定」（多屏时「1) … 2) …」），不再出现 `c=2/2`、`#2` 这类内容。
+- 自动出牌：多屏步骤按纯 id 作答；同卡不同顺序的屏按状态作答不再判失败；旧计划照常可回放。
+- 其它 mod：无专门判断，全部走既有 `CardPrint`/`namesOf`。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、1,326,426 B；INSTALL OK sha256 CAEE5AB210F82ABD02225C1B530B81422473920BAC6544991970BAC3348962DC（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`）。
+- 实机由用户自测（m00732）：重点看①面板选牌步骤是否恢复成「选：卡名 → 确定」；②大舍牌/液态记忆这类多屏步骤是否不再 `回放不通过`；③若仍断链，`chain-unfinished` 行现在带 `handScreenSummary`/`selectionState()`。

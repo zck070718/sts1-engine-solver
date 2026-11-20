@@ -2970,3 +2970,16 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 创意工坊 | 2026-11-20 10:21 首次上传只更新了元数据：tools\install.ps1 不写 D:\mods-workshop\sts1-engine-solver\content\，工坊 content 里仍是 1.0.6 的 jar（sha 2788BA09…，1,321,810 B）。10:36 手工把 mod\sts1-engine-solver.jar（sha 5064CB5F…，1,326,909 B）复制进 content 后重传，日志出现 UploadingContent 并 `Successfully updated workshop item!`（_tmp\upload-workshop-1.0.7c.log） | ✅ |
 | GitHub | 本地提交 c38e5ce；推送失败（Connection was reset / 端口 443 超时，4 次），master 领先 origin 1，待网络恢复重跑 tools\push-github.ps1 | ⏳ 待推送 |
 - 实机验证 | 由用户自测；日志 `screen i/n answer=… planState=… sandboxOffered=… liveOffered=…` | ⏳ 待实机
+
+
+## B205 回放「answered 1 of 36 recorded screen(s)」+ 计划答案去掉屏内第几张（user m01995，2026-11-20）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 现象 | 10:47:13 `plan replay failed at step 6: … answered 1 of 36 recorded screen(s) and the fight opened no more (… wereCardsRetrieved=true numSelected=0 …)`；同线 `replayed 6 of 36 steps`；自动出牌 `这条线重放不通过（第 14 步：坚毅+（1) 选：羽化 → 确定 2) 选：c=2/2 …）` | ✅ 已复现（日志 10919/10922/10941） |
+| 根因 | B204 的 `id@STATE#k` 把 `CardPrint` 字段文本（含 `\|`）写进计划答案，`Action.chainCount` 按 `'\|'` 数屏 ⇒ 1 屏变 36 段；沙盒大舍牌一次作答即关门 ⇒ 第 2 段起无屏可开 | ✅ |
+| 代码 | `Solver.expandScreens` 答案回纯 id；删 `screenPositions`/`positionKeys`/`positioned`/positions 版 `joinSegments`；`Solver.positionsOn` 支持 `baseOf`/`positional` 透传；`Driver.stateRunOf`/`handScreenSummary`/`ownState`/`sameState`/`atPosition(wantState)`；`answerForReplay` 两路补传状态串；`chain-unfinished` 带屏状态 | ✅ |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,326,426 B；INSTALL OK sha256 CAEE5AB210F82ABD02225C1B530B81422473920BAC6544991970BAC3348962DC | ✅ |
+| 文档 | PLAN-BUGS.md `## B205`、PLAN.md 状态表 B205 行、本表 | ✅ |
+| GitHub / 创意工坊 | 未获授权，未发布（1.0.7 仍是线上版本） | ⏳ 待用户决定 |
+| 实机验证 | 由用户自测：面板选牌步骤应恢复「选：卡名 → 确定」；多屏步骤不再「回放不通过」 | ⏳ 待实机 |

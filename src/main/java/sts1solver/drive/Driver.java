@@ -2055,6 +2055,28 @@ public final class Driver {
         return sb.toString();
     }
 
+    /**
+     * B205 (user m01995): the STATES of a screen's cards in enumeration order, "state,state,...".
+     *
+     * <p>This is what tells two live screens apart fairly: the same cards listed in another order
+     * are the same screen (which slot a copy sat in is unobservable), while a missing or extra state
+     * is not. It only feeds comparisons -- nothing is written into a plan.
+     */
+    public static String stateRunOf(java.util.List<AbstractCard> cards) {
+        if (cards == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < cards.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            AbstractCard c = cards.get(i);
+            sb.append(c == null ? "?" : sts1solver.mirror.CardPrint.of(c));
+        }
+        return sb.toString();
+    }
+
     /** Comma separated card ids, for labels and for comparing options. */
     public static String namesOf(java.util.List<AbstractCard> cards) {
         StringBuilder sb = new StringBuilder();
@@ -2478,13 +2500,18 @@ public final class Driver {
             if (hash > 0) {
                 try {
                     Integer.parseInt(raw.substring(hash + 1).trim());
-                    position = raw;
+                    // Only a decided STATE may carry a slot, the same rule positionsOn applies.
+                    position = sameState(ownState(raw), want) ? raw : null;
                     raw = raw.substring(0, hash).trim();
                 } catch (NumberFormatException notAPosition) {
                     position = null;
                 }
             }
-            AbstractCard pick = position == null ? null : atPosition(candidates, used, position);
+            // B205 (user m01995): positions are no longer written into a plan, so below they arrive
+            // only from an answer recorded by 1.0.7 (kept replayable). Such an entry's state is
+            // checked against the plan's own STATE record here (above), so the slot can never resolve
+            // onto a different card than the one the plan named.
+            AbstractCard pick = position == null ? null : atPosition(candidates, used, position, want);
             if (pick == null) {
                 pick = matchOffered(candidates, used, raw, nameAt(names, i), nameAt(uuids, i), want);
             }
@@ -2494,6 +2521,21 @@ public final class Driver {
             }
         }
         return chosen;
+    }
+
+    /**
+     * B205 (user m01995): the STATE part of an "id@STATE" / "id@STATE#k" answer entry ("" when the
+     * entry carries none). Only old-build plans hold these; a plain id has no '@'.
+     */
+    private static String ownState(String entry) {
+        String one = entry == null ? "" : entry.trim();
+        int at = one.indexOf('@');
+        return at < 0 ? "" : one.substring(at + 1);
+    }
+
+    /** B205: are these the same state? An unrecorded state agrees with anything. */
+    private static boolean sameState(String a, String b) {
+        return a == null || a.isEmpty() || b == null || b.isEmpty() || a.equals(b);
     }
 
     /** Does an unused candidate carry exactly this state fingerprint? (B200) */
@@ -2509,7 +2551,7 @@ public final class Driver {
      * returns null and the caller falls back to matching by state, then by id.
      */
     private static AbstractCard atPosition(java.util.List<AbstractCard> candidates, boolean[] used,
-                                           String idAndPosition) {
+                                           String idAndPosition, String wantState) {
         int hash = idAndPosition.lastIndexOf('#');
         if (hash <= 0 || candidates == null) {
             return null;
@@ -2531,6 +2573,10 @@ public final class Driver {
             }
             String state = sts1solver.mirror.CardPrint.of(c);
             if (!id.equals(state) && !id.equals(c.cardID)) {
+                continue;
+            }
+            // B205: a "id@STATE#k" entry may only be resolved onto that very state.
+            if (wantState != null && !wantState.isEmpty() && !wantState.equals(state)) {
                 continue;
             }
             at++;
@@ -3857,6 +3903,24 @@ public final class Driver {
             return Math.max(1, h.numCardsToSelect);
         } catch (Throwable t) {
             return 0;
+        }
+    }
+
+    /**
+     * B205 (user m01995): the hand picker's own state, shortened -- what a replay error adds when
+     * the plan expected another screen in a chain and the engine opened none.
+     */
+    public static String handScreenSummary() {
+        try {
+            com.megacrit.cardcrawl.screens.select.HandCardSelectScreen h =
+                    AbstractDungeon.handCardSelectScreen;
+            if (h == null) {
+                return "null";
+            }
+            return "numCardsToSelect=" + h.numCardsToSelect + " wereCardsRetrieved="
+                    + h.wereCardsRetrieved + " numSelected=" + h.numSelected;
+        } catch (Throwable t) {
+            return "? (" + t + ")";
         }
     }
 
