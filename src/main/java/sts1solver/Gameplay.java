@@ -134,10 +134,13 @@ public final class Gameplay {
     private static String pendingChoiceOffered = "";
     /** Last "a screen is open and we have no answer" signature, logged once (m16202-5). */
     private static String latentLogged = "";
-    /** B202: when autoplay first saw the kind of pick screen that is open now (0 = none). */
-    private static long selectionSeenAt;
-    /** B202: which kind of pick screen {@link #selectionSeenAt} belongs to. */
-    private static Driver.SelectionKind selectionSeenKind;
+    /**
+     * B209 (user m03085): when autoplay first saw the pick screen that is open now (0 = none seen
+     * yet). Keyed on the screen BEING OPEN, not on its kind: two screens of the same kind in a row
+     * (plan 计划妥当 asks twice per turn) each get their own beat, and the key cannot go stale
+     * across fights because it is dropped the moment no screen is up.
+     */
+    private static long selectionOpenAt;
     /** Last unanswerable card-screen signature (B71), logged once per screen+step. */
     private static String cardScreenLogged = "";
     /**
@@ -2529,9 +2532,15 @@ public final class Gameplay {
         int answered = 0;
         while (Driver.isAwaitingSelection()) {
             if (answered >= choices.length) {
+                // B209 (user m03085): the end turn opened a picker the plan has no answer for. This
+                // is a PREDICTION of the turn (a captured world), and the documented rule above is
+                // that it is not guessed: report the turn unknown, and the gate stops the autopilot
+                // before it ends a turn it cannot cost. Clicking the first option here used to make
+                // the prediction describe a branch the plan never took.
+                Driver.settleForReplay(16);
                 return new EndTurnRisk(hpBefore, hpBefore, incoming, false,
-                        "\u7ed3\u675f\u56de\u5408\u91cc\u5f00\u4e86\u4e00\u5757\u8ba1\u5212\u6ca1\u6709\u7b54\u6848\u7684\u9009\u724c\u5c4f\uff08"
-                                + Driver.selectionState() + "\uff09");
+                        "\u7ed3\u675f\u56de\u5408\u91cc\u5f00\u4e86\u4e00\u5757\u8ba1\u5212\u6ca1\u6709\u7b54\u6848\u7684\u9009\u724c\u5c4f\uff08\u7b2c "
+                                + (answered + 1) + " \u5757\uff09");
             }
             boolean ok = Driver.resolveSelectionByNames(Gameplay.chainAt(choices, answered),
                     Gameplay.chainAt(displays, answered), Gameplay.chainAt(uuids, answered),
@@ -2736,6 +2745,14 @@ public final class Gameplay {
                 && ((step.action.choice != null && !step.action.choice.isEmpty())
                     || Action.chainCount(step.action.screenKinds) > 0)) {
             Gameplay.planPendingChoice(step.action);
+        } else if (step != null && step.action != null && step.action.isEndTurn()) {
+            // B207 (user m02161): 结束回合 opens the pick screens of the NEXT turn too (计划妥当 asks
+            // again which card to keep). The step's answered screens were spent while ending, and a
+            // screen past the plan's last answer is refused, not walked (B209, see
+            // answerEndTurnScreens), so there is nothing to carry: drop the chain.
+            Gameplay.clearPendingChoice();
+        } else {
+            Gameplay.clearPendingChoice();
         }
         try {
             Action action = step.action;
@@ -2749,6 +2766,12 @@ public final class Gameplay {
                 // first, which is exactly what clicking select-then-deselect does on the real screen.
                 // B167 (user m18895): answer it THROUGH the chain, not around it -- see
                 // answerSelectionStep.
+                // B209 (user m03085): the page may have just appeared (the card that opened it is the
+                // step before this one). Leave it up for one beat first; returning false here is not
+                // a failure -- maybeAutopilot sees the open screen and waits another frame.
+                if (!Gameplay.selectionMayClick()) {
+                    return false;
+                }
                 boolean answered = Gameplay.answerSelectionStep(action);
                 if (!answered) {
                     Gameplay.fail("计划里的选牌答案答不进去（" + Driver.lastSelectionFailure() + "）");
@@ -2756,6 +2779,7 @@ public final class Gameplay {
                 }
                 Log.info("step selection: answered " + Driver.selectionKind() + " with [" + action.choice + "]");
                 lastActionAtMs = now();
+                Gameplay.selectionClicked();
                 return true;
             }
             if (action.isEndTurn()) {
@@ -3258,7 +3282,15 @@ public final class Gameplay {
     }
 
     private static int choiceScreenCount() {
-        return Math.max(choiceSegments(pendingChoice).length, pendingScreens);
+        // B208 (user m02882): the plan carries one answer per screen the step opens, because the
+        // sandbox writes them while it walks them. A fight that opens a screen the plan has no
+        // answer for is a real difference, and answerNextScreen refuses it (B209) instead of
+        // walking it blindly.
+        int answers = choiceSegments(pendingChoice).length;
+        if (answers == 0) {
+            answers = choiceSegments(pendingChoiceKinds).length;
+        }
+        return Math.max(answers, pendingScreens);
     }
 
     /**
@@ -3270,6 +3302,17 @@ public final class Gameplay {
     private static boolean answerNextScreen() {
         int screens = Gameplay.choiceScreenCount();
         if (screens == 0) {
+            return false;
+        }
+        if (pendingChoiceAt >= choiceSegments(pendingChoice).length) {
+            // B209 (user m03085): the plan's answers are used up and the fight still has a screen
+            // open -- the fight opened one the search never walked. Clicking its first option would
+            // take a branch the plan did not cost, which is how a "5 turn no damage" line stops
+            // being the line that was searched. STS2's autoplay throws in exactly this case
+            // (NativeChoicePlanNotRequestedException); here it is a refusal the caller turns into a
+            // stop-with-prompt, and the plan and the pending step stay untouched.
+            Driver.refuseNow("no-plan-answer", "the plan has " + choiceSegments(pendingChoice).length
+                    + " answer(s); this is screen " + (pendingChoiceAt + 1) + "/" + screens);
             return false;
         }
         String[] choices = choiceSegments(pendingChoice);
@@ -3297,11 +3340,12 @@ public final class Gameplay {
         boolean ok;
         boolean screenRead = ids.trim().isEmpty() && kindAt.isEmpty();
         if (screenRead) {
-            // B203 (user m01393): the plan recorded this screen but not what it picked on it -- the ONE
-            // click the search still writes blindly, so there is nothing to replay here. Instead of a
-            // guess, take the click expandScreens makes: the first option of the screen, in the same
-            // enumeration order the search used. Driver refuses a screen with no option at all.
-            ok = Driver.resolveSelectionLiveFirst(kindAt);
+            // B209 (user m03085): the plan has a screen at this position but neither a pick nor a
+            // kind for it -- nothing to replay, and no reason to believe a first-option click is what
+            // the search did. Same rule as the used-up case above: refuse, stop, keep the plan.
+            Driver.refuseNow("no-plan-answer", "the plan recorded this screen without an answer"
+                    + " (position " + (at + 1) + "/" + screens + ")");
+            return false;
         } else if (ids.trim().isEmpty()) {
             // B190 (user m01149): the plan answered this screen with nothing -- pick nothing and
             // press 确定. Driver refuses it unless the picker itself allows zero picks; it never
@@ -3377,6 +3421,10 @@ public final class Gameplay {
         pendingChoiceKinds = action.screenKinds == null ? "" : action.screenKinds;
         // B203: what the sandbox saw on those screens, compared with what the live screen offers.
         pendingChoiceOffered = action.screenOffered == null ? "" : action.screenOffered;
+        // B208 (user m02882): the plan carries ONE answer per screen the step opens -- the same
+        // screens the live fight opens, because the sandbox wrote them while it answered them. A
+        // fight that opens more than the plan has answers for still needs the last-CLOSED screen to
+        // prove the step got its pick, so the count is a lower bound, not a promise.
         pendingScreens = Math.max(Action.chainCount(action.choice),
                 Action.chainCount(pendingChoiceKinds));
         pendingChoiceAt = 0;
@@ -3403,9 +3451,10 @@ public final class Gameplay {
      * <p>{@code submit} used to call {@link Driver#resolveSelectionLive} directly. That answered the
      * screen but never told the chain it had been consumed, so {@code pendingChoiceAt} stayed 0 and
      * the answer stayed pending. Two things followed, both seen in the 2026-11-08 log: every later
-     * step warned "the plan recorded N selection answers for this step but the fight opened 0; the
-     * rest were never used", and a still-pending answer could be handed to an unrelated screen that
-     * opened later (the autopilot path answers whatever is pending).
+     * step said "the plan recorded N selection answers for this step but the fight opened 0; the
+     * rest were never used" (INFO since B207: a screen the plan folded away is not a lost answer),
+     * and a still-pending answer could be handed to an unrelated screen that opened later (the
+     * autopilot path answers whatever is pending).
      */
     private static boolean answerSelectionStep(Action action) {
         boolean nothing = action.choice == null || action.choice.trim().isEmpty();
@@ -3468,17 +3517,18 @@ public final class Gameplay {
      * touched it: the autopilot stopped with "\u8fd9\u4e00\u5c4f\u8ba1\u5212\u91cc\u6ca1\u6709\u7b54\u6848".
      *
      * <p>B202 correction (user m01364): the WALK of a screen belongs to the side that walks it. A
-     * plan that HAS screens recorded answers them itself; the search enumerated the options in the
-     * sandbox and took the first one, so the plan and the board stay one mechanism. Only where the
-     * plan recorded no screen for this step -- the sandbox never saw a picker there (a potion the
-     * search drank without one, a chain that came out longer) -- does the screen's own options
-     * decide, because no plan answer exists to be wrong.
+     * plan that HAS screens recorded answers them itself, screen for screen, in the order the
+     * sandbox walked them. Where the plan recorded no screen for this step -- the sandbox never saw
+     * a picker there (a potion the search drank without one, a chain that came out longer) -- there
+     * is no answer to replay: B209 (user m03085) stops the autopilot and hands the screen to the
+     * player, because a first-option click would be a choice the search never costed.
      *
      * <p>An EMPTY answer is not a missing answer: "answer the pick with nothing" is a chain entry
      * the search wrote (it picked nothing), and asking for a card there changes what the pick does.
      * Cards are never fitted to a screen: the planned cards must be offered as planned, or the
-     * step reports the mismatch (P2-15/B49). The click happens one autoplay beat after the screen
-     * appeared ({@link #selectionBeatDue()}), so it reads like a player, not like a frame.
+     * step reports the mismatch (P2-15/B49). The click happens only after the page has been up for
+     * {@link sts1solver.ui.AutoPace#selectMinOpenMs()} ({@link #selectionMayClick()}), so it reads
+     * like a player, not like a frame.
      */
     private static void answerLatentSelection() {
         try {
@@ -3496,7 +3546,7 @@ public final class Gameplay {
             if (!autopilot) {
                 return;
             }
-            if (!Gameplay.selectionBeatDue()) {
+            if (!Gameplay.selectionMayClick()) {
                 return;
             }
             // B202 (user m01364): the plan walks the screens wherever it recorded any -- an empty
@@ -3518,20 +3568,16 @@ public final class Gameplay {
                 }
                 return;
             }
-            // B202 (user m01364) + B203 (user m01393): the plan recorded no screen for this step at all
-            // (a potion the search drank without seeing a picker, a chain that came out longer live).
-            // There is no answer to be wrong, so the click is the one the search makes on every screen
-            // it walks: the first option. NOT the best card -- that is a rule the search never applied.
-            if (Driver.resolveSelectionLiveFirst(Driver.selectionKind() == null
-                    ? "" : Driver.selectionKind().name())) {
-                status = "\u9009\u724c\uff1a" + choiceSegmentText();
-                Hud.set(Gameplay.lines());
-                Log.info("latent selection: the plan recorded no screen for this step; took the first option"
-                        + " (the same click the search makes on every screen it walks)");
-                return;
-            }
-            Log.warn("latent selection: the open screen could not be answered ("
-                    + Driver.lastSelectionFailure() + ")");
+            // B209 (user m03085): the plan recorded no screen for this step at all. There is nothing
+            // to replay, and clicking the screen's first option would invent a choice the search
+            // never made -- the exact way a planned line stops being that line. STS2's autoplay
+            // throws on a request the plan does not cover (NativeChoicePlanNotRequestedException);
+            // here the autopilot stops and hands the screen to the player.
+            String why = "\u5b9e\u673a\u5f00\u4e86\u8ba1\u5212\u91cc\u6ca1\u6709\u7b54\u6848\u7684\u9009\u724c\u5c4f\uff1b\u81ea\u52a8\u51fa\u724c\u5df2\u505c\u624b\uff0c\u8bf7\u4f60\u9009\uff0c\u9009\u5b8c\u70b9\u300c\u81ea\u52a8\u300d\u7ee7\u7eed";
+            Log.warn("latent selection: the plan recorded no screen for this step (kind="
+                    + Driver.selectionKind() + " candidates=" + Driver.namesOf(Driver.selectionCandidates())
+                    + "); stopping instead of clicking its first option");
+            Gameplay.stopAutopilot(why);
         } catch (Throwable t) {
             Log.warn("latent selection: " + t);
         }
@@ -3657,7 +3703,7 @@ public final class Gameplay {
             if (used >= total) {
                 return;
             }
-            Log.warn("the plan recorded " + total + " selection answers for this step but the fight"
+            Log.info("the plan recorded " + total + " selection answers for this step but the fight"
                     + " opened " + used + "; the rest were never used (" + pendingChoice + ")");
         } catch (Throwable t) {
             Log.warn("unused answer report: " + t);
@@ -3700,6 +3746,11 @@ public final class Gameplay {
             Hud.set(Gameplay.lines());
             return;
         }
+        // B209 (user m03085): one gate for every screen autoplay touches. A page that has just
+        // appeared is left alone for one beat, the way STS2 leaves it 250 ms before it selects.
+        if (!Gameplay.selectionMayClick()) {
+            return;
+        }
         if (Driver.selectionKind() == Driver.SelectionKind.REWARD) {
             // Discovery / choose-one screen: a real decision the plan already made. Answer it the way
             // a click would and let the frozen action retrieve the card -- then the plan continues.
@@ -3729,6 +3780,7 @@ public final class Gameplay {
                 status = "\u9009\u724c\uff1a" + pickText;
                 Hud.set(Gameplay.lines());
                 Log.info("execute: answered card reward with " + pick);
+                Gameplay.selectionClicked();
                 return;
             }
             Log.warn("execute: could not answer card reward (" + Driver.cardRewardSummary() + ")");
@@ -3759,6 +3811,22 @@ public final class Gameplay {
                 return;
             }
             boolean answered = answerNextScreen();
+            if (!answered && Driver.lastSelectionFailure().startsWith("no-plan-answer: ")) {
+                // B209 (user m03085): the fight opened a screen the plan never walked. Stop and say
+                // so -- clicking anything here runs a branch the search never costed.
+                String why = "\u5b9e\u673a\u5f00\u4e86\u8ba1\u5212\u91cc\u6ca1\u6709\u7b54\u6848\u7684\u9009\u724c\u5c4f\uff1b\u81ea\u52a8\u51fa\u724c\u5df2\u505c\u624b\uff0c\u8bf7\u4f60\u9009\uff0c\u9009\u5b8c\u70b9\u300c\u81ea\u52a8\u300d\u7ee7\u7eed";
+                Log.warn("selection screen the plan has no answer for: " + Driver.lastSelectionFailure()
+                        + " | step=" + (Gameplay.step + 1) + " kind=" + Driver.selectionKind()
+                        + " plan=[" + planned + "] liveOffered=["
+                        + brief(Solver.positionedIds(Driver.selectionCandidates())) + "]");
+                if (autopilot) {
+                    Gameplay.stopAutopilot(why);
+                } else {
+                    status = why;
+                    Hud.set(Gameplay.lines());
+                }
+                return;
+            }
             if (!answered && Driver.lastSelectionFailure().startsWith("not-offered: ")) {
                 // B204 (user m01642): the screen is up and complete, but the plan's answer names a
                 // copy it does not carry the same way. Clicking anything here would run a branch the
@@ -3781,6 +3849,7 @@ public final class Gameplay {
                 Log.info("execute: answered selection with " + planned);
                 lastActionAtMs = now();
                 Driver.clearSelectionRetry();
+                Gameplay.selectionClicked();
                 return;
             }
             // B66/B158 (user m15075): this wait is a STATE, not a stopwatch. The pick is filled and the
@@ -4292,45 +4361,46 @@ public final class Gameplay {
     }
 
     /**
-     * B202 (user m01245): when autoplay may touch the open pick screen -- a fraction of a second
-     * AFTER it appeared, at the same beat the plan uses between two actions.
+     * B209 (user m03085): may autoplay touch the pick screen that is up right now?
      *
-     * <p>Answering on the first frame the screen is up read as "the mod clicks before I can see it".
-     * The wait is a clock comparison on the frame loop (never a sleep), keyed on the screen itself:
-     * the first frame the same kind of screen is seen starts the beat, so a second screen of a chain
-     * starts its own. Delay 0 means "answer on the first frame" (the pre-B202 behaviour), kept so
-     * the A/B is possible.
+     * <p>The rule is STS2's autoplay: a native page must have been visible for at least
+     * {@link sts1solver.ui.AutoPace#selectMinOpenMs()} (250 ms) before it is selected on, and the
+     * clock starts when THIS page is first seen -- not when the previous one was. Waiting is a clock
+     * comparison on the frame loop, never a sleep, so the game keeps rendering at full speed.
+     *
+     * <p>Every answering path asks this one question ({@code pollPending}, the selection STEP, and
+     * {@code answerLatentSelection}); a caller that is not due simply returns and asks again next
+     * frame. Callers must NOT turn "not due" into a refusal: {@link Driver#lastSelectionFailure()}
+     * still holds the previous answer's reason, and the stop-on-mismatch rule reads it.
      */
-    private static boolean selectionBeatDue() {
-        int delay = sts1solver.ui.AutoPace.delayMs();
-        if (delay <= 0) {
+    private static boolean selectionMayClick() {
+        boolean open = Driver.isAwaitingSelection()
+                || Driver.selectionKind() == Driver.SelectionKind.REWARD;
+        if (!open) {
+            selectionOpenAt = 0L;
             return true;
         }
-        Driver.SelectionKind kind = Driver.selectionKind();
-        if (kind == null || kind == Driver.SelectionKind.NONE) {
-            selectionSeenAt = 0L;
+        int minMs = sts1solver.ui.AutoPace.selectMinOpenMs();
+        if (minMs <= 0) {
             return true;
         }
         long now = now();
-        if (selectionSeenAt == 0L || kind != selectionSeenKind) {
-            selectionSeenAt = now;
-            selectionSeenKind = kind;
+        if (selectionOpenAt == 0L) {
+            selectionOpenAt = now;
             return false;
         }
-        return sts1solver.ui.AutoPace.due(now, selectionSeenAt + delay);
+        return now - selectionOpenAt >= minMs;
     }
 
     /**
-     * B202 (user m01245): the plan answered no screen here -- pick one live, from THIS screen.
-     *
-     * <p>The sandbox records an answer per screen it walked; a screen the plan does not cover (a
-     * potion the search drank without seeing a picker, an end turn whose chain came out one screen
-     * longer) used to stop the autopilot. Enumerating the screen's own options and replaying the
-     * first is the same walk the search makes in the sandbox (Solver.expandScreens takes
-     * options.get(0) of its options), so the live board and the plan stay one mechanism. The answer
-     * is logged as a live selection with no planned answer, which is the evidence a later report
-     * reads.
+     * B209 (user m03085): the click is in. A screen that stays up while the waiting action consumes
+     * it, or a second screen of a chain, gets its own beat -- one page, one wait, like STS2's
+     * per-request 250 ms.
      */
+    private static void selectionClicked() {
+        selectionOpenAt = now();
+    }
+
     /** Player-facing text for a refusal; the raw reason stays in English in the log. */
     private static String refusalText(String reason) {
         if ("not in combat".equals(reason)) {

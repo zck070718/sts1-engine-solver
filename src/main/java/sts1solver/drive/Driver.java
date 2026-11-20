@@ -2264,10 +2264,10 @@ public final class Driver {
             }
             return answerCardReward(pick);
         }
+        java.util.List<AbstractCard> candidates = selectionCandidates();
         if (cardIds == null || cardIds.isEmpty()) {
             return resolveSelectionLiveHeuristically();
         }
-        java.util.List<AbstractCard> candidates = selectionCandidates();
         java.util.List<AbstractCard> chosen =
                 picksFor(candidates, cardIds, displayNames, choiceUuids, choicePrints);
         if (chosen.isEmpty()) {
@@ -2405,28 +2405,38 @@ public final class Driver {
      */
     private static AbstractCard matchOffered(java.util.List<AbstractCard> offered, boolean[] used,
                                              String id, String name, String uuid, String print) {
-        for (int pass = 0; pass < 5; pass++) {
+        // B206 (user m02438): the CARD FACE (id + upgrade + cost + numbers) comes before the exact
+        // print. The print also carries facts that have nothing to do with which card this is
+        // (type, rarity, color, the card's own text, mod subclass fields), so two copies of one card
+        // that the plan and the screen describe at slightly different moments used to miss each
+        // other here -- and a miss is a refusal, not a fallback.
+        String face = print == null || print.isEmpty() ? null : sts1solver.mirror.CardPrint.face(print);
+        for (int pass = 0; pass < 6; pass++) {
             for (int k = 0; k < offered.size(); k++) {
                 AbstractCard c = offered.get(k);
                 if (c == null || used != null && used[k]) {
                     continue;
                 }
-                if (pass == 0 && print != null && !print.isEmpty()
+                if (pass == 0 && face != null
+                        && face.equals(sts1solver.mirror.CardPrint.face(sts1solver.mirror.CardPrint.of(c)))) {
+                    return c;
+                }
+                if (pass == 1 && print != null && !print.isEmpty()
                         && print.equals(sts1solver.mirror.CardPrint.of(c))) {
                     return c;
                 }
-                if (pass == 1 && uuid != null && !uuid.isEmpty() && c.uuid != null
+                if (pass == 2 && uuid != null && !uuid.isEmpty() && c.uuid != null
                         && uuid.equals(c.uuid.toString())) {
                     return c;
                 }
-                if (pass == 2 && name != null && id != null && id.equals(c.cardID)
+                if (pass == 3 && name != null && id != null && id.equals(c.cardID)
                         && name.equals(c.name)) {
                     return c;
                 }
-                if (pass == 3 && id != null && id.equals(c.cardID)) {
+                if (pass == 4 && id != null && id.equals(c.cardID)) {
                     return c;
                 }
-                if (pass == 4 && name != null && name.equals(c.name)) {
+                if (pass == 5 && name != null && name.equals(c.name)) {
                     return c;
                 }
             }
@@ -2468,23 +2478,18 @@ public final class Driver {
         String[] ids = cardIds.split(",");
         boolean[] used = new boolean[candidates.size()];
         for (int i = 0; i < ids.length; i++) {
-            // B200: when the plan recorded a STATE and the screen offers SEVERAL copies of that id,
-            // none of which carries it, there is no honest answer left. Falling through to "a card
-            // with that id" would silently take a different copy -- the two engines would then keep
-            // different hands, and the divergence only shows up turns later as a phantom cost. Refuse
-            // the whole answer instead; the callers already report "not-offered" and stop.
+            // B206 (user m02438): B200 refused the whole answer here whenever no unused copy
+            // carried the planned print EXACTLY and the id appeared more than once. The print is a
+            // superset of the card's identity (it also carries type/rarity/text/mod fields), so a
+            // screen that offers exactly the planned card could still be refused -- the live fight
+            // then stopped on "3 copies of Defend_G on offer and none carries the planned state",
+            // with the plan asking for a Defend and the hand holding three of them. The question is
+            // which card the plan names, and the answer is the CARD FACE (see CardPrint.face): the
+            // same id and upgrade, at the cost the screen shows. Copies that share a face are the
+            // same card to the game -- nothing reads "which copy" -- so any one of them answers the
+            // plan. A card the screen does not offer (no copy with that id AT ALL) is still a real
+            // refusal, and it is reported as one, by the caller.
             String want = nameAt(prints, i);
-            String bare = ids[i].trim();
-            int cut = bare.lastIndexOf('#');
-            if (cut > 0) {
-                bare = bare.substring(0, cut).trim();
-            }
-            if (want != null && !want.isEmpty() && !carriesPrint(candidates, used, want)
-                    && countUnusedId(candidates, used, bare) > 1) {
-                Log.warn("selection: " + countUnusedId(candidates, used, bare) + " copies of "
-                        + bare + " on offer and none carries the planned state (" + want + ")");
-                return new java.util.ArrayList<AbstractCard>();
-            }
             // used[] keeps duplicate ids (a hand-select that discards two Strikes) honest: the same
             // physical card can be chosen once, never twice.
             //
@@ -2511,6 +2516,9 @@ public final class Driver {
             // only from an answer recorded by 1.0.7 (kept replayable). Such an entry's state is
             // checked against the plan's own STATE record here (above), so the slot can never resolve
             // onto a different card than the one the plan named.
+            // B206: a recorded STATE that no copy carries exactly is not a refusal by itself. The
+            // state is re-read as a face and matched through the same six passes; only a card the
+            // screen does not offer at all (not even by id) comes back null and gets refused.
             AbstractCard pick = position == null ? null : atPosition(candidates, used, position, want);
             if (pick == null) {
                 pick = matchOffered(candidates, used, raw, nameAt(names, i), nameAt(uuids, i), want);
@@ -2538,7 +2546,6 @@ public final class Driver {
         return a == null || a.isEmpty() || b == null || b.isEmpty() || a.equals(b);
     }
 
-    /** Does an unused candidate carry exactly this state fingerprint? (B200) */
     /**
      * B204 (user m01614): the k-th copy of a STATE in the screen's enumeration ("Strike_R+|c=1/1#2").
      *
@@ -2585,30 +2592,6 @@ public final class Driver {
             }
         }
         return null;
-    }
-
-    private static boolean carriesPrint(java.util.List<AbstractCard> candidates, boolean[] used,
-                                        String print) {
-        for (int k = 0; k < candidates.size(); k++) {
-            AbstractCard c = candidates.get(k);
-            if (c != null && (used == null || !used[k])
-                    && print.equals(sts1solver.mirror.CardPrint.of(c))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** How many still-available candidates carry this id -- 1 means the pick cannot be ambiguous. */
-    private static int countUnusedId(java.util.List<AbstractCard> candidates, boolean[] used, String id) {
-        int n = 0;
-        for (int k = 0; k < candidates.size(); k++) {
-            AbstractCard c = candidates.get(k);
-            if (c != null && (used == null || !used[k]) && c.cardID.equals(id)) {
-                ++n;
-            }
-        }
-        return n;
     }
 
     private static String nameAt(String[] names, int i) {
@@ -2988,38 +2971,6 @@ public final class Driver {
             chosen.add(best.get(i));
         }
         return answerLiveSelection(chosen, namesOf(chosen));
-    }
-
-    /**
-     * B203 (user m01393): answer the open screen the way the SEARCH walks it -- the first option.
-     *
-     * <p>The sandbox takes exactly one click per screen it walks ({@code Solver.expandScreens}:
-     * {@code resolveSelection(options.get(0))} over {@code selectionOptions(...)}), so "the plan
-     * records the screen but not the pick" has one live equivalent, and it is this one -- not "the
-     * best card", which is a different rule the search never made and which picks a card the plan
-     * did not assume. Nothing here decides WHICH card is good: the order is the screen's own.
-     */
-    public static boolean resolveSelectionLiveFirst(String kindLabel) {
-        selectionFailure = "";
-        SelectionKind kind = selectionKind();
-        if (kind == SelectionKind.NONE) {
-            refused("not-settled", "no select screen is open");
-            return false;
-        }
-        java.util.List<AbstractCard> candidates = selectionCandidates();
-        if (candidates == null || candidates.isEmpty()) {
-            refused("not-offered", "the screen offers nothing to take (" + selectionState() + ")");
-            return false;
-        }
-        AbstractCard pick = candidates.get(0);
-        refused("plan-recorded-no-pick", "the plan recorded the " + kindLabel + " screen but not its pick;"
-                + " taking " + pick.cardID + ", the first option, as the search does");
-        Log.info("live selection: first option [" + pick.cardID + "] state="
-                + sts1solver.mirror.CardPrint.of(pick) + " of [" + brief(candidates, 10) + "]"
-                + " (the plan recorded no pick for this screen)");
-        java.util.List<AbstractCard> one = new java.util.ArrayList<AbstractCard>();
-        one.add(pick);
-        return answerLiveSelection(one, pick.cardID);
     }
 
     /**

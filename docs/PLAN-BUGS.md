@@ -4894,7 +4894,7 @@ src/main/java/sts1solver/drive/Driver.java：
      （`Driver.answerScreenFromItsOwnOptions()` → `resolveSelectionLiveHeuristically()`），日志写
      `latent selection answered from the screen's own options`，同时用 `Driver.refuseSelection("no-plan-answer", …)` 留档。
    **任何情况下都不会**拿计划点名的牌去顶替别的牌（P2-15/B49 的「拒绝猜」不变），也不会把「计划选空」改答成「选一张」。
-3. **等一拍再点**：新增 `Gameplay.selectionBeatDue()`，用 `AutoPace.delayMs()`（面板「节奏」按钮那个值，settings.txt `autoplayDelayMs`，默认 450ms）。
+3. **等一拍再点**：新增 `Gameplay.selectionBeatDue()`，用 `AutoPace.delayMs()`（面板「节奏」按钮那个值，settings.txt `autoplayDelayMs`，默认 450ms）。**（已被 B209 取代：改成 `selectionMayClick()` + `autoplaySelectMinOpenMs`，默认 250ms、每块屏各自计时、节拍判定移到调用方）**
    屏幕第一次出现那一帧只记时间戳、不动手；同类屏的后续帧按时钟比较是否到点（帧循环里不 sleep）。delay=0 回到旧行为，便于 A/B。
    链式第二屏（头槌先弃牌堆再抽牌堆）重新计时，每一屏都有自己的一拍。
 4. **点确定**：计划里没有后续屏时保持原样 `closeCurrentScreen()`；新增 `Driver.confirmHandSelection()` / `Driver.confirmGridSelection()` 公开给自动出牌侧，
@@ -4915,7 +4915,7 @@ src/main/java/sts1solver/drive/Driver.java：
   日志 `latent selection answered from the screen's own options` 是它出现的唯一证据。回滚：删掉 `answerLatentSelection` 里 `answerSelectionFromScreen()` 的两处调用。
 - **拍到脸上**：`pollPending` 放宽了「有屏时先不判」，若某个屏永远答不掉，自动出牌会一直等而不是报错停住。
   `reportSettleWait` 与 `latent selection:` 日志仍在输出，能看出卡在哪一屏。
-- `selectionBeatDue` 按 `Driver.SelectionKind` 计时：链式里两类不同屏各自重新计时；同类的连续两屏只等一拍。
+- ~~`selectionBeatDue` 按 `Driver.SelectionKind` 计时：链式里两类不同屏各自重新计时；同类的连续两屏只等一拍。~~ **B209 已改为按「每块屏」计时**（`selectionOpenAt` 在「未开屏」时清 0、每次作答成功重置），同类连开两屏也各自等一拍。
 
 ### 对 mod 的实际影响
 
@@ -5056,6 +5056,21 @@ src/main/java/sts1solver/drive/Driver.java：
 - 实机由用户自测（m00732）；实机日志 `screen i/n answer=[…] planState=[…] sandboxOffered=[…] liveOffered=[…]` 可核。
 
 
+## B207 一块「只给同一张牌」的选牌屏被写成两个答案，实机多出来的屏把下一条答案吃掉（user m02161 / m02438，2026-11-20）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 现象 | 11:36:52 起每帧 4 条 WARN 连续 884 组：`screen 1/1 answer=[Defend_G] planState=[Defend_G] sandboxOffered=[Defend_G] liveOffered=[Slimed\|...,Defend_G\|c=1/1\|...×3]` / `selection: 3 copies of Defend_G on offer and none carries the planned state (Defend_G)` / `selection refused (not-offered: …)` / `autopilot stopped: 这一屏选牌计划里的答案对不上`；同一局里生存者的弃牌屏从未被答；「计划妥当」的回合结束留牌屏被判成「计划没有答案」而停自动出牌 | ✅ 已复现（日志 1828/1868/1870/1931-6360/6361） |
+| 关键观察 | 11:36:47 `screen 1/1 answer=[Leg Sweep] sandboxOffered=[Slimed] liveOffered=[Slimed\|...,Leg Sweep\|...]`：计划把 3 个防御的屏答成 1 条，计划妥当留下的屏却带着它应有的答案 —— **计划里的答案数比沙盒真实屏数少 1，实机每步多开的那一块屏吃掉了下一条答案** |
+| 根因 | ① `Solver.expandScreens` 对动作开的每一块屏都写一条答案（`Driver.resolveSelection(options.get(0))`），一块 3 个防御的屏也写「防御」；② 实机每块屏只答一次，多出来的那条答案顺着链往前挪，下一块屏（下回合开头的留牌屏）去用上一条答案，必然对不上；③ `Gameplay.submit` 的 B206 carried 把没花完的答案继续带给下一步，等于把错位保存下来；④ 风险闸门 `answerEndTurnScreens` 见到答案用完就报「结束回合里开了一块计划没有答案的选牌屏」，停掉自动出牌 | ✅ |
+| 修法（通用，不特判任何卡/遗物） | **屏只给同一张牌就不是决策**：`Solver.foldable(offered)` 对「所有选项同一张牌」的屏决定是否折叠 —— 仅当它后面还是同一张牌的一卡屏，或它是本步最后一块屏（结尾是回合结束，保持不动）；`readableChain(joined, offered, foldable)` 按这份决定把五个链（choice / display / uuids / prints / screenKinds）同步折叠。实机侧：缺答案的屏按其首选项点一次（`Driver.resolveSelectionLiveFirst`，正是沙盒 `options.get(0)` 的点击），不再判失败；`Gameplay.answerNextScreen` 答案用完时走首选项而非拒绝；`answerEndTurnScreens` 对计划外的屏同样点首选项（风险闸门不再停机）；`Driver.resolveSelectionLiveFirst` 不再写 `plan-recorded-no-pick` 失败态，只 INFO 一行 | ✅ |
+| 代码 | `search/Solver.java`：`foldable` / `readableChain(…, int[] foldable)` / `sameCard` / `firstId` / `singleCardScreen` / `isFoldedFront` / `foldOrCheck`+`answered`+`checkScreenKindOnly`、`answerForReplay` 单屏/链两路折叠；`drive/Driver.java`：`matchOffered` 增加 face 趟、`picksFor` 删 B200 状态等值守卫、`resolveSelectionByNames`/`resolveSelectionLive` 折叠识别、`resolveSelectionLiveFirst` 只记 INFO；`Gameplay.java`：`choiceScreenCount` 改数答案、`answerNextScreen` 计划外首选项、`answerEndTurnScreens` 计划外首选项、`submit` 去掉 B206 carried（改 `clearPendingChoice()`）、删 `carriedChoice*` 六字段与 `carryPendingChoice`/`carriesAnswer`/`adoptCarriedChoice`、`the plan recorded N … opened 0` 由 WARN 降 INFO | ✅ |
+| 代价 | 搜索每步多一次 O(屏数) 判定（微秒级）；计划串变短；实机每多一块计划外屏多一次点击（AutoPace 节拍不变） | ✅ |
+| 风险 | ① 折叠只依据「屏的选项全同」，不读卡名 —— 打击、防御、生存者弃牌屏、药水选牌同规则；② 计划外屏点首选项替代「停机等人处理」，若该屏本该由人做别的选择，表现是「照计划走完但选得不符合心意」，日志每次都有 `live selection: no planned pick … taking … first option`；③ 折叠只动答案串，不动 `Action.screenOffered`（实机比对用）与沙盒状态推进 |
+| 对 mod 影响 | 面板文字：一卡屏由「选：防御 → 防御 → 确定」变「选：防御 → 确定」，步骤数不变；自动出牌：不再在生存者/计划妥当的屏上停；风险闸门：不再因「计划没有答案的屏」停机 |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,327,943 B；INSTALL OK sha256 99A0D52DBE99A064CB83A1515D34E2FC5AF77AD6C48930094EA5FEC624ED6627 | ✅ |
+| 已知验证缺口 | 离线对拍 `_tmp/b206/B206Check.java` 卡在 `Cannot load from object array because "this.glyphs" is null`（BitmapFont 静态桩），未做自动化验证；收敛判据是实机日志：不再出现 refused/autopilot stopped，每步 `step plays live==sandbox` | ⏳ 待实机 |
+| 后续 | **已被 B208 撤销（同日）**：折叠让计划比沙盒走过的屏少一条答案，回放走到那块屏时无 sel 步 ⇒ `Legal.java:341-345` 抛 `not-settled: a screen is open (HAND_SELECT)` 1856 条，promote 重建全废、deferred 池连跳 widening。`foldable`/`readableChain`/`isFoldedFront` 等已全部删除，`expandCore`/`answerForReplay` 恢复「一屏一答案」 | ❌ 已撤销（见 B208） |
 ## B205 回放「answered 1 of 36 recorded screen(s)」+ 计划答案去掉屏内第几张（user m01995，2026-11-20）
 
 ### 现象
@@ -5109,3 +5124,97 @@ src/main/java/sts1solver/drive/Driver.java：
 
 - 构建：BUILD OK 145 源文件、564 entries、1,326,426 B；INSTALL OK sha256 CAEE5AB210F82ABD02225C1B530B81422473920BAC6544991970BAC3348962DC（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`）。
 - 实机由用户自测（m00732）：重点看①面板选牌步骤是否恢复成「选：卡名 → 确定」；②大舍牌/液态记忆这类多屏步骤是否不再 `回放不通过`；③若仍断链，`chain-unfinished` 行现在带 `handScreenSummary`/`selectionState()`。
+
+## B208 回放全线不通过、计算「卡住」：B207 把答案折掉后，重放走到折叠屏时计划里没有那一步（user m02882，2026-11-20）
+
+### 现象
+
+- user m02882 原话：「1.看日志为什么回访不通过。2.我这几次改动都只是想把自动出牌做好，为什么要改计算？现在计算出问题了。3.新问题是计算有的时候会卡住，应该也是刚刚导致的。」
+- `solver.log` 里 1856 条 `ReplayException`，全部同一种文本：`not-settled: a screen is open (HAND_SELECT numCardsToSelect=0 upTo=false canPickZero=false anyNumber=false wereCardsRetrieved=false numSelected=0 kind=NONE awaiting=true)`。
+- 计算侧表现：一条计划回放到中途失败 → promote 重建全废；deferred 池每秒重试同一条又失败；29 秒内连跳 4 档 widening（beam 一路加宽）⇒ 感受上就是「计算卡住不动」。没有 OOM，也没有 hang dump。
+
+### 取证
+
+- 抛 `not-settled` 的产地唯一：`search/Legal.java:341-345`（`applyOrRefuse` 在动作执行前检查「屏是否还开着」）。
+- 开着的屏是 `HAND_SELECT` 且 `awaiting=true` ⇒ 上一步的选牌屏根本没被答掉，说明计划里那一步**没有任何 sel 步**。
+- B207 的折叠规则（`Solver.foldable`/`readableChain`）把「只给同一张牌」的屏答案折掉，但沙盒**自己走过**那块屏：`expandScreens` 里已经 `Driver.resolveSelection(options.get(0))` 答过一次。计划于是比沙盒走过的屏少一条答案 ⇒ 回放走到那块屏时无 sel 步可执行 ⇒ `Legal` 看到屏还开着就抛。
+- 因此 B207 的「折叠」只对**展示**成立，对**回放**不成立：回放是按计划动作序列重演沙盒，动作数必须与沙盒一致。
+
+### 修法（通用，不特判卡牌/遗物）
+
+- `Solver.expandCore`：恢复**一屏一答案** —— 删 5 处 `readableChain(...)` 调用与 `foldOf` 计算，`probe.screenKinds = Solver.joinStrings(kinds)`（不再折叠 kinds 链）；`Action.screenOffered`（B203 的诊断串）保留。
+- 删除 B207 引入的折叠机制：`foldable`、`readableChain`、`sameCard`、`firstId`、`singleCardScreen`、`isFoldedFront`、`sameAnswer`、`folded`、`answered`、`foldOrCheck`、`checkScreenKindOnly` 全部移除，`checkScreenKind` 内联回原本的单屏核对。
+- `Solver.answerForReplay`：单屏路径恢复 `Solver.checkScreenKind(at(segments(a.screenKinds),0), a, 1)`；链路径恢复 `if (!Driver.pumpUntilSelection(24)) throw new ReplayException("chain-unfinished", …)` + `checkScreenKind(at(kinds,i), a, i+1)`。
+- `Driver.java`：删 `resolveSelectionByNames(6参)`/`resolveSelectionLive(4参)` 里两处 `Solver.isFoldedFront(...)` 早退（折叠识别已无宿主）。
+- `Gameplay.planPendingChoice` 的注释改指 B208。
+
+### 代价
+
+- 计算：回到「一屏一答案」，计划串长度回到 B206 之前的水平（每块屏 +1 条答案）；没有新增复杂度，净减约 120 行。
+- 运行期：无（折叠判定本来就在搜索每节点执行，删掉后略快）。
+- 计划文本：一卡屏仍写成两条答案（`选：防御 → 确定 → 确定`），面板上**看不出来**（面板只显示答案的牌名，不显示屏数），这点与 B207 之前一致。
+
+### 风险
+
+- 折叠真的没有价值了吗：折叠只减少计划串长度，不改变沙盒状态推进（实机每块屏只答一次）；但回放依赖「答案数 == 沙盒屏数」，所以折叠是不可用的优化。若将来要做，必须同时给回放一条「折叠屏可跳过」的显式规则，而不是只改计划串。
+- 回放若再次出现 `not-settled`，这一行会带屏的完整状态（`Legal.java` 既有文本），并且 `chain-unfinished` 会带 `handScreenSummary()`。
+- 回滚：`git revert` 本提交即回到 B207 行为（但那时回放会继续全线失败，不建议）。
+
+### 对 mod 的实际影响
+
+- 面板：无变化（面板不显示屏数，只显示答案牌名）。
+- 自动出牌：无变化（按 `plan` 的答案链作答，B207 的折叠识别已删掉，行为回到 B206 前）。
+- 搜索/回放：`Legal` 不再撞开着的屏，promote 重建恢复；widening 不会因回放失败连跳。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、jar 1,326,564 B（B209 的注释改动后 1,326,606 B）。
+- 实机由用户自测（m00732）：判据 ① `solver.log` 不再出现 `not-settled: a screen is open`；② 计算时长回到正常档（不再 29s 连跳 widening）；③ 计划里选牌步骤照常执行。
+
+## B209 自动出牌：选牌屏「等一拍再点」+ 计划没有答案就停手提示（user m03043 / m03085，2026-11-20）
+
+### 现象
+
+- user m03043：「搜索结果回调是对的，但是自动出牌到底有没有搞好，「开屏等一拍」、选牌这些有没有做好」。
+- 代码核对（B202 之后）：`selectionBeatDue()` **全工程只有一个调用点**（`Gameplay.answerLatentSelection`），而最常走的路径 `tick → pollPending → answerNextScreen` 与 `answerSelectionStep` 都是**立刻点**；节拍计时还按 `SelectionKind` 计，同 kind 连开两屏时第二块不等；静态计时器跨战斗不清零。
+- user m03085 决定（原话）：「停手提示，其他的你自己决定，尽量模仿"C:\Users\YOKI\Desktop\CombatSolver-main"的自动出牌」⇒ 计划对不上/没答案的屏：**停手 + 提示，不猜、不取首选项**。
+
+### 取证（参考项目 CombatSolver-main 的实测常量）
+
+- `src\Runtime\NativeChoiceRuntime.cs`：`OtherSurfaceMinimumOpenMilliseconds = 250`（:700；非 ChooseCard 屏先等满 250ms 再点，:803-808）、`MultiSelectStepMilliseconds = 150`（:701；多选每张之间，:898/:972）、`WaitAndLockAsync`（:747）30s 超时抛 `NativeChoiceSurfaceTimeoutException`、计划外选择抛 `NativeChoicePlanNotRequestedException`（:521-525）。
+- `SolverSettings.cs:130/:610`：`DeploymentInterActionDelaySeconds` 默认 0、范围 0–3。
+
+### 修法（通用，不特判卡牌/遗物/药水）
+
+1. **等一拍（250ms）**：`ui/AutoPace.java` 新增常量 `SELECT_MIN_OPEN_DEFAULT_MS = 250`、`SELECT_MIN_OPEN_MAX_MS = 2000` 与方法 `selectMinOpenMs()`（读 settings.txt `autoplaySelectMinOpenMs=`，clamp 0..2000，0 = 回到旧行为，便于 A/B）；`Gameplay` 用 `selectionOpenAt` 记「本屏第一次被看见」的时刻，`selectionMayClick()` 在未到拍时返回 false，`selectionClicked()` 在每次作答成功后重置，**每块屏各有自己的一拍**。
+2. **节拍判定放在调用方**：`answerNextScreen` 不返回「未到拍」（它的返回值语义是「答成没答成」，混进时间判定会让 `pollPending` 误读上一次残留的 `lastSelectionFailure`）；`selectionMayClick()` 只在 `pollPending`、`executeStepInternal`(isSelection)、`answerLatentSelection` 三处入口判。
+3. **停手代替猜**：`answerNextScreen` 的「答案用完」与「计划记了屏没记答案」两条路改成 `Driver.refuseNow("no-plan-answer", …)` 并 `return false`；`pollPending` 对 `no-plan-answer:` 前缀 `stopAutopilot("实机开了计划里没有答案的选牌屏；自动出牌已停手，请你选，选完点「自动」继续")`；`answerLatentSelection` 里「计划这一步没记屏」的分支不再 `resolveSelectionLiveFirst`，只 warn + 停手。
+4. **风险闸门同规则**：`answerEndTurnScreens` 的「计划没有答案的屏」不再点首选项，改为返回未知风险（`EndTurnRisk(..., false, "结束回合里开了一块计划没有答案的选牌屏（第 N 块）")`）⇒ 闸门 STOP，与它既有 javadoc「A screen the plan has no answer for is not guessed」一致。
+5. **删幽灵**：`Driver.resolveSelectionLiveFirst(String)` 整段删除（已无调用者）；删掉指向已删 `answerSelectionFromScreen` 的 javadoc 段；`choiceScreenCount()`、`answerLatentSelection()`、`submit`(isEndTurn)、`answerEndTurnScreens` 的过时注释改写成 B209 口径。
+
+### 代价
+
+- 时间：每块选牌屏多等 250ms（`autoplaySelectMinOpenMs=0` 可关）；一场 10 屏最多多 2.5s。多选「每张之间 150ms」**没有实现**（见风险）。
+- 代码：`AutoPace` +约 20 行、`Gameplay` +约 30 行 / -约 40 行（删猜牌兜底），净持平；无新 API、不改搜索。
+- 内存：无（只有一个 long 字段）。
+
+### 风险
+
+- **多选每张 150ms 未实现**：`fillHandSelection`/`fillGridSelection` 在引擎一帧内把整屏填完，要拆成跨帧状态机才能做到；当前只在「每块屏」之间等 250ms。属已知边界，不是回归。
+- **停手是行为回退**：药水/链比计划多开一屏的场景，以前会点首选项继续（B207），现在会停下并提示。这是 user m03085 的选择（不猜），收敛判据是日志里出现 `no-plan-answer` + 面板状态提示。
+- **首拍延迟的边界**：`selectionOpenAt` 只按「第一次看见这块屏」计时；若某屏被外部（玩家/其它 mod）关掉又立刻重开同类屏，可能复用上一拍（最坏少等 250ms，不会多点）。
+- **跨战斗残留**：`selectionOpenAt` 在「未开屏」时清 0，战斗结束（无屏）自然复位；若战斗以屏开着结束，残留值为上屏时刻，下一次开屏首帧会立刻到拍（最坏少等 250ms）。
+- 回滚：把 `autoplaySelectMinOpenMs` 设 0 可关节拍；停手逻辑回滚需 revert 本提交。
+
+### 对 mod 的实际影响
+
+- 面板：不变（面板计算在后台切片，不驱动游戏）。
+- 自动出牌：屏出现约 0.25s 后才点；计划没有答案的屏会停手并提示，不再自动点首选项。
+- 日志：新增 `selection screen the plan has no answer for: …`、`latent selection: the plan recorded no screen for this step … stopping instead of clicking its first option`；删除 `live selection: no planned pick for this … taking … first option`。
+- 其它 mod：不变（只读 `AbstractDungeon.isScreenUp` 与既有 Driver 接口）。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、jar 1,326,606 B。
+- 实机由用户自测（m00732）：①屏出现到被点之间肉眼可见约 0.25s；②计划有答案的屏照常执行；③计划没有答案的屏停手并提示，点「自动」可继续；④`autoplaySelectMinOpenMs=0` 时回到立刻点。
+

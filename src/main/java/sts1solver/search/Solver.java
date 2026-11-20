@@ -1028,11 +1028,17 @@ public final class Solver {
             // B205 (user m01995): the plan carries plain ids. The "which copy" detail lives in
             // Action.screenOffered (the states each screen offered), never in the answer string --
             // the answer string is what the panel prints.
-            probe.choice = Solver.joinSegments(ids, 0);
-            probe.choiceDisplay = Solver.joinSegments(displays, 0);
-            probe.choiceUuids = Solver.joinSegments(uuids, 0);
-            probe.choicePrints = Solver.joinSegments(prints, 0);
+            int[] firstPick = new int[n];
+            probe.choice = Solver.joinSegments(ids, firstPick);
+            probe.choiceDisplay = Solver.joinSegments(displays, firstPick);
+            probe.choiceUuids = Solver.joinSegments(uuids, firstPick);
+            probe.choicePrints = Solver.joinSegments(prints, firstPick);
             probe.screenKinds = Solver.joinStrings(kinds);
+            // B208 (user m02882): ONE entry per screen the sandbox opened -- exactly the screens the
+            // engine answered here, the same count the live fight opens. B207 folded the entries of a
+            // screen that offered only one card, which is what put the sandbox's plan one answer
+            // short of its own screens: a replay walked the remaining screens looking for a "sel"
+            // step that was never there and died in Legal with "not-settled: a screen is open".
             probe.screenOffered = Solver.joinScreens(offeredPrints);
             probeWorld.trimPresentation();
             long readBackStart = System.nanoTime();
@@ -1095,12 +1101,17 @@ public final class Solver {
                 }
                 boolean answered = true;
                 java.util.List<String> branchKinds = new java.util.ArrayList<String>();
+                // B207: the states each screen offered, walked in the same order as the answers. It is
+                // usually the probe's own list, but a branch whose chain came out shorter walks fewer
+                // screens, so the list is measured rather than inherited.
+                java.util.List<String> branchOffered = new java.util.ArrayList<String>();
                 for (int s = 0; s < screens && answered; s++) {
                     if (!Driver.pumpUntilSelection(24)) {
                         answered = false;
                         break;
                     }
                     Driver.SelectionKind kind = Driver.selectionKind();
+                    branchOffered.add(Solver.stateRun(Driver.selectionCandidates()));
                     answered = Driver.resolveSelectionByNames(
                             ids.get(s).get(pick[s]), displays.get(s).get(pick[s]),
                             uuids.get(s).get(pick[s]), prints.get(s).get(pick[s]));
@@ -1131,6 +1142,9 @@ public final class Solver {
                     w.trimPresentation();
                     w.readBack();
                     Solver.readChoice(choice);
+                    // B208 (user m02882): one entry per screen THIS branch answered, never folded --
+                    // the plan has to answer every screen the fight can open, or the replay after it
+                    // meets a screen with no answer and the search loses the line.
                     choice.choice = Solver.joinSegments(ids, pick);
                     choice.choiceDisplay = Solver.joinSegments(displays, pick);
                     choice.choiceUuids = Solver.joinSegments(uuids, pick);
@@ -1482,8 +1496,13 @@ public final class Solver {
     /**
      * B204 (user m01614): the plan's positioned answer ("id@STATE#k,..."), re-expressed for the
      * screen that is open NOW -- same distinct cards in the same order as the ones the search
-     * walked, so the k names the same copy. Returns plain ids ready to match, or null when the two
-     * enumerations do not line up (the caller then refuses instead of taking a shifted card).
+     * walked, so the k names the same copy. Returns plain ids ready to match.
+     *
+     * <p>B206 (user m02438): every entry that cannot be re-expressed (a state the live screen shows
+     * at another cost, a copy number that does not resolve, an enumeration that moved) falls back to
+     * the id the plan named -- the caller's matcher answers it by card face. Only an entry that does
+     * not parse at all returns null. A slot is a hint about WHICH COPY, never a reason to refuse a
+     * screen that clearly holds the card.
      *
      * <p>Nothing here knows about a card or a relic: it compares two enumerations of the same screen.
      *
@@ -1540,15 +1559,23 @@ public final class Solver {
             } catch (NumberFormatException e) {
                 return null;
             }
+            // B206 (user m02438): the slot is a hint, not a demand. A copy number that does not
+            // resolve -- because the live screen shows that card at another cost, or holds fewer
+            // copies of it -- falls back to the plan's plain id for this entry and lets picksFor
+            // answer it (face first, then id). Returning null here refused the whole screen over a
+            // number the user never sees and the game never reads.
             String positionedNow = Solver.nthOfState(here, entry.substring(0, hash).trim(), k);
             if (positionedNow == null) {
-                return null;
+                sb.append(i > 0 ? "," : "").append(entry.substring(0, hash).trim());
+                continue;
             }
             if (checkShape && !entry.substring(0, hash).trim().equals(
                     Solver.nthOfState(before, entry.substring(0, hash).trim(), k))) {
                 // The k-th copy of that state is a different card on the live screen than it was on
-                // the walked one: the enumeration moved, so the position no longer means anything.
-                return null;
+                // the walked one: the enumeration moved, so the position no longer means anything --
+                // answer by the card the plan named instead.
+                sb.append(i > 0 ? "," : "").append(entry.substring(0, hash).trim());
+                continue;
             }
             sb.append(i > 0 ? "," : "").append(positionedNow);
         }

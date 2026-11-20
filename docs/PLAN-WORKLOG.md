@@ -2980,6 +2980,44 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 根因 | B204 的 `id@STATE#k` 把 `CardPrint` 字段文本（含 `\|`）写进计划答案，`Action.chainCount` 按 `'\|'` 数屏 ⇒ 1 屏变 36 段；沙盒大舍牌一次作答即关门 ⇒ 第 2 段起无屏可开 | ✅ |
 | 代码 | `Solver.expandScreens` 答案回纯 id；删 `screenPositions`/`positionKeys`/`positioned`/positions 版 `joinSegments`；`Solver.positionsOn` 支持 `baseOf`/`positional` 透传；`Driver.stateRunOf`/`handScreenSummary`/`ownState`/`sameState`/`atPosition(wantState)`；`answerForReplay` 两路补传状态串；`chain-unfinished` 带屏状态 | ✅ |
 | 构建/安装 | BUILD OK 145 源文件、564 entries、1,326,426 B；INSTALL OK sha256 CAEE5AB210F82ABD02225C1B530B81422473920BAC6544991970BAC3348962DC | ✅ |
-| 文档 | PLAN-BUGS.md `## B205`、PLAN.md 状态表 B205 行、本表 | ✅ |
+| 文档 | PLAN-BUGS.md `## B205`、PLAN.md 状态表 B205 行、本表（B205 的屏内第几张已被 B207 的折叠规则取代，见 B207） | ✅ |
 | GitHub / 创意工坊 | 未获授权，未发布（1.0.7 仍是线上版本） | ⏳ 待用户决定 |
 | 实机验证 | 由用户自测：面板选牌步骤应恢复「选：卡名 → 确定」；多屏步骤不再「回放不通过」 | ⏳ 待实机 |
+
+## B207 一卡屏写成两个答案 → 实机错位（user m02161 / m02438，2026-11-20；取代同日未发布的 B206 carried 方案）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 根因 | expandScreens 对每块屏都写答案；实机每块屏只答一次 ⇒ 多出来的答案吃掉下一块屏的答案；B206 carried 保存错位；风险闸门停机 | ✅ |
+| 代码 | Solver.foldable/readableChain(foldable)/sameCard/firstId/isFoldedFront/foldOrCheck；Driver 折叠识别 + resolveSelectionLiveFirst 只记 INFO + 删 B200 守卫；Gameplay 数答案、计划外屏首选项、删 B206 carried、misleading WARN 降 INFO | ✅ |
+| 构建/安装 | BUILD OK 145 源文件 1,327,943 B；INSTALL OK sha256 99A0D52DBE99A064CB83A1515D34E2FC5AF77AD6C48930094EA5FEC624ED6627 | ✅ |
+| 文档 | PLAN-BUGS.md ## B207、PLAN.md 状态表 B207 行、本表 | ✅ |
+| 实机验证 | 由用户自测：生存者弃牌屏、计划妥当两回合留牌屏、药水选牌都不应停自动出牌；日志无 refused/autopilot stopped | ⏳ 待实机 |
+| GitHub / 创意工坊 | 未发布（待用户决定） | ⏳ |
+| 后续 | **同日被 B208 撤销**：折叠让计划比沙盒走过的屏少一条答案，1856 条回放失败 + 计算连跳 widening。不要再用折叠 | ❌ 已撤销 |
+
+## B208 撤销 B207 的折叠，恢复「一屏一答案」（user m02882，2026-11-20）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 现象 | user m02882：回放不通过、计算卡住。日志 1856 条 `ReplayException: not-settled: a screen is open (HAND_SELECT … awaiting=true)` | ✅ 已复现（日志） |
+| 根因 | `search/Legal.java:341-345`：B207 折叠让计划比沙盒走过的屏少一条答案 ⇒ 回放走到折叠屏时无 `sel` 步 ⇒ 撞开着的屏；promote 重建全废、deferred 池重试、29s 连跳 4 档 widening | ✅ |
+| 代码 | `Solver.expandCore` 删 5 处 `readableChain`/折叠加 `probe.screenKinds = joinStrings(kinds)`；删 `foldable/readableChain/sameCard/firstId/singleCardScreen/isFoldedFront/sameAnswer/folded/answered/foldOrCheck/checkScreenKindOnly`；`answerForReplay` 单屏/链恢复 `checkScreenKind`（链还恢复 `pumpUntilSelection(24)`）；`Driver` 删两处 `isFoldedFront` 早退；`Gameplay.planPendingChoice` 注释改指 B208 | ✅ |
+| 构建 | BUILD OK 145 源文件、564 entries、1,326,564 B（B209 注释改动后 1,326,606 B） | ✅ |
+| 文档 | PLAN-BUGS.md ## B208（并把 B207 标「已撤销」）、PLAN.md 状态表 B208 行 + B207 行改「已撤销」、本表 | ✅ |
+| 实机验证 | 由用户自测：日志不再出现 `not-settled: a screen is open`；计算时长回到正常档 | ⏳ 待实机 |
+| 安装/发布 | 与 B209 同版 1.0.8 安装/上传 | ⏳ |
+
+## B209 自动出牌：选牌屏等一拍（250ms）+ 计划没有答案就停手提示（user m03043 / m03085，2026-11-20）
+
+| 项 | 内容 | 状态 |
+| --- | --- | --- |
+| 根因 | `selectionBeatDue()` 只有一个调用点（`answerLatentSelection`），主路径 `pollPending → answerNextScreen`、`answerSelectionStep` 都是立刻点；节拍按 SelectionKind 计，同类连开两屏第二块不等 | ✅ |
+| 参考 | CombatSolver-main `NativeChoiceRuntime.cs`：`OtherSurfaceMinimumOpenMilliseconds = 250`（:700）、`MultiSelectStepMilliseconds = 150`（:701）、计划外选择抛异常（:521-525） | ✅ |
+| 代码 | `ui/AutoPace.java`：`SELECT_MIN_OPEN_DEFAULT_MS = 250`/`SELECT_MIN_OPEN_MAX_MS = 2000` + `selectMinOpenMs()`（settings.txt `autoplaySelectMinOpenMs`，0=旧行为）；`Gameplay`：`selectionOpenAt`/`selectionMayClick()`/`selectionClicked()`，节拍只在这三处入口判（`pollPending`、`executeStepInternal`(isSelection)、`answerLatentSelection`），每块屏各自计时；`answerNextScreen` 的「答案用完」「记屏没记答案」改 `refuseNow("no-plan-answer", …)`，`pollPending` 对 `no-plan-answer:` 停自动出牌并提示，`answerLatentSelection` 不再点首选项，`answerEndTurnScreens` 计划外屏返回未知风险（闸门 STOP）；删 `Driver.resolveSelectionLiveFirst` 与幽灵 javadoc | ✅ |
+| 代价/风险 | 每屏多 250ms（可关）；多选「每张 150ms」未实现（fillHandSelection/fillGridSelection 一帧填完，属已知边界）；停手是相对 B207 的行为回退（不猜，符合 m03085） | ✅ 已写 PLAN-BUGS |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,326,606 B；INSTALL OK（见下） | ⏳ |
+| 文档 | PLAN-BUGS.md ## B209、PLAN.md 状态表 B209 行、本表 | ✅ |
+| 实机验证 | 由用户自测：屏出现约 0.25s 后才点；计划没答案的屏停手提示、可点「自动」继续 | ⏳ 待实机 |
+| 发布 | 版本号 1.0.8（B208+B209 同版），GitHub + 创意工坊 | ⏳ |
+

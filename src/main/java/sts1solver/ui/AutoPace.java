@@ -42,10 +42,23 @@ public final class AutoPace {
     public static final int VERIFY_MIN_MS = 0;
     public static final int VERIFY_MAX_MS = 5000;
 
+    /**
+     * B209 (user m03085): how long a pick screen must have been visible before autoplay clicks it.
+     *
+     * <p>STS2's autoplay keeps the native page open for at least 250 ms before it selects on it
+     * ({@code NativeChoiceRuntime.OtherSurfaceMinimumOpenMilliseconds}), so the click never looks
+     * like something that happened before the page was there. This is that constant, in the same
+     * settings.txt as the pace ({@code autoplaySelectMinOpenMs=}), re-read on use.
+     */
+    public static final int SELECT_MIN_OPEN_DEFAULT_MS = 250;
+    public static final int SELECT_MIN_OPEN_MAX_MS = 2000;
+
     private static int cached = -1;
     private static long cachedAt;
     private static int verifyCached = -1;
     private static long verifyCachedAt;
+    private static int selectCached = -1;
+    private static long selectCachedAt;
     private static final long CACHE_MS = 500L;
 
     /** Drops the cache so the next read hits the file (after a write). */
@@ -54,6 +67,24 @@ public final class AutoPace {
         cachedAt = 0L;
         verifyCached = -1;
         verifyCachedAt = 0L;
+        selectCached = -1;
+        selectCachedAt = 0L;
+    }
+
+    /**
+     * B209 (user m03085): the minimum time a pick screen stays open before autoplay clicks it
+     * (settings.txt {@code autoplaySelectMinOpenMs=}), clamped to 0..2000. 0 = click on the first
+     * frame, which is the pre-B209 behaviour and the A/B switch.
+     */
+    public static synchronized int selectMinOpenMs() {
+        long now = System.currentTimeMillis();
+        if (selectCached >= 0 && now - selectCachedAt < CACHE_MS) {
+            return selectCached;
+        }
+        int v = (int) readLong("autoplaySelectMinOpenMs=", SELECT_MIN_OPEN_DEFAULT_MS);
+        selectCached = Math.max(0, Math.min(SELECT_MIN_OPEN_MAX_MS, v));
+        selectCachedAt = now;
+        return selectCached;
     }
 
     /** Settle window in ms (settings.txt {@code autoplayVerifyMs=}), clamped to 0..5000. */

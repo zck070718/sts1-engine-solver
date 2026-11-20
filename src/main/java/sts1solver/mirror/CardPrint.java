@@ -117,6 +117,38 @@ public final class CardPrint {
         return sb.toString();
     }
 
+    /**
+     * B206 (user m02438): the part of a print that says WHICH CARD this is -- the id, the upgrade,
+     * the cost it shows and its numbers. Everything else a print carries (type, rarity, colour, the
+     * card's own text, fields a mod's card class adds) describes the card FACE, not this copy of it.
+     *
+     * <p>Two copies with the same face are the same card to the game: nothing in the engine reads
+     * "which copy", so any of them answers a plan that named the card. Answering by face is what
+     * lets a plan and a screen agree when their prints differ in a field that has no bearing on the
+     * pick -- {@code of()} keeps being the strict identity the digests and library checks use.
+     *
+     * <p>Only the leading segment of a print is read, up to the first field a card's CLASS adds
+     * ({@code |type=}), and the turn cost {@code |c=cost/costForTurn} is normalised to
+     * {@code cost/*}: the plan was written before the draw re-rolled it, which is a fact about the
+     * turn, not about the card.
+     */
+    public static String face(String print) {
+        if (print == null) {
+            return "";
+        }
+        int cut = print.indexOf("|type=");
+        String head = cut < 0 ? print : print.substring(0, cut);
+        int cost = head.indexOf("|c=");
+        if (cost >= 0) {
+            int slash = head.indexOf('/', cost);
+            int end = head.indexOf('|', cost);
+            if (slash > 0 && (end < 0 || slash < end)) {
+                head = head.substring(0, slash + 1) + "*" + (end < 0 ? "" : head.substring(end));
+            }
+        }
+        return head;
+    }
+
     /** True when the game itself has no way to tell these two cards apart. */
     public static boolean same(AbstractCard a, AbstractCard b) {
         return of(a).equals(of(b));
