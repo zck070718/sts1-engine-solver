@@ -5271,3 +5271,115 @@ src/main/java/sts1solver/drive/Driver.java：
 ### 关联
 
 - 后续｜B209 的两条「计划没有答案」判据（`answerNextScreen` 用完、`answerEndTurnScreens` 未知风险）现在按**屏数**读，空答案是合法答案而不是缺失答案；B190 的写入端语义（`screenKinds` 决定屏数）未变。
+
+## B211 打赢的那一帧把整条路线和结果一起清掉：面板显示「点「计算」求解本场」（user m03712 / m03754，2026-11-20）
+
+### 现象
+
+- user m03559（原话）：「看一下最新日志，正确打赢为什么显示路线被丢弃？」；user m03712（原话）：「不是的，面板这场战斗最后一步是结束回合->选择牌，不是快斩。你再看看对不对」。
+- 日志（C:\Users\YOKI\sts1-engine-solver\solver.log，925 行 / 552,116 B / mtime 2026-11-20 15:42:41）第二场（奴隶贩子，SlaverRed 18/48 带 Poison 8）计划 11 步、末步 `结束回合（不选 → 确定）`，15:42:32.975 `settle wait (still): step 11/11`、33.164 `markers: step=10 kind=end label=结束回合（不选 → 确定）`，即 11 步全部走完；随后 15:42:33.492 与 33.825 连续两条 `combat detected`（相隔 333ms），路线条消失、面板退回「点「计算」求解本场」。
+- 全日志搜「丢弃」0 次：**没有任何一步被作废**，是胜利那一刻把整条路线清掉了。
+
+### 根因
+
+- `Gameplay.tick()` 的战斗态 `active` 直接取当帧实况：`boolean inRoomCombat = Gameplay.inRoomCombat(); boolean combatOver = inRoomCombat && Driver.combatOver(); boolean active = inRoomCombat && (!combatOver || overFrames < 20);`（原 Gameplay.java:1416-1420）。
+- `inRoomCombat()` 要求 `room.phase == COMBAT && !room.isBattleOver`；胜利瞬间这两个字段先变，`active` 立刻 false ⇒ 翻转分支执行 `plan = null; step = 0; status = "idle"; ... Hud.set(null)`（原 :1433-1444）⇒ `lines()` 走 `if (plan == null)` 早退 ⇒ `route.clear(); rowSteps.clear(); rows.add("点「计算」求解本场…")`（:1931-1941）。
+- 同一瞬间房间可能又读回 COMBAT（收尾动画/结算窗口），于是下一帧又翻转成 true，再清一次 ⇒ 日志里两条 `combat detected` 相隔 333ms。overFrames 的 20 帧宽限只保护 `combatOver` 那条路，保护不了 `inRoomCombat()` 单帧为假这条路。
+- 另外收尾文案也有问题：`status` 只在 `plan == null` 时上标题行（:1926），计划存在时它永远不显示；而胜利后 `plan` 已被清空，于是连「赢了」这句话都没有。
+
+### 修法（通用：以「引擎状态要持续成立」代替「一帧即真」，以房间实例代替布尔）
+
+1. **离开战斗要防抖**：`active` 由 true→false 需同时满足「连续 ≥6 帧」且「≥250ms」读不到战斗（`idleFrames`/`idleSinceMs` 两个字段）；进入战斗不延缓（第一帧就认）。
+2. **进入时不无条件清计划**：翻转成 true 时比较 `AbstractDungeon.getCurrRoom()` 的**实例**与 `roomSeen`；同一个房间回来只打一行 `combat re-detected in the same room: the route stays (...)`，不动 `plan`；不同房间（真的换一场战斗）才清。
+3. **战斗结束保留路线与结果**：翻转成 false 时不再 `plan = null`/`status = "idle"`，改为 `status = "本场已结束（胜利/失败/已离开战斗）· 路线 N/M 步"` 并 `Hud.set(lines())`；胜负由棋盘判（`fightOutcome()`：玩家死=失败；还有活着的怪=已离开战斗（烟雾弹之类）；否则胜利），不依赖此时已为 false 的 `Driver.combatOver()`。`lines()` 的 headline 追加 `" · " + status`（当 `!hasPlan()` 时），标题行逻辑不变。
+4. **清路线的时机改成「离开房间」**：非战斗帧里若 `getCurrRoom()` 换成另一个实例且仍有计划，才 `plan = null` 并重画；房间为 null 的那几帧沿用旧戳（不清）。
+5. **翻转可追溯**：每次 `active` 翻转打一行 `fight state on/off (debounced): player=… room=<hash> phase=… battleOver=… monsters=… inRoomCombat=… combatOver=… idleFrames=… overFrames=…`（`logFightFlip`）。
+6. `reset()` 与 `detectWorldSwitch()` 里清 `roomSeen/idleFrames/idleSinceMs`。
+
+### 代价
+
+- Gameplay.java 单文件：新增 3 个静态字段（`idleFrames`/`idleSinceMs`/`roomSeen`）与 4 个私有方法（`roomNow`/`playerDeadNow`/`fightOutcome`/`logFightFlip`），tick 内多一次 `getCurrRoom()` 读取与两个整数比较；每帧成本可忽略（无分配、无反射）。
+- 面板在战斗结束后会多停留一条路线（内容来自内存里的旧 `plan`），离开房间即清。
+
+### 风险
+
+- 防抖把「离开战斗」延后约 250ms：这期间 `inCombat` 仍为 true，若有自动出牌在跑会多一次 `maybeAutopilot` 机会 —— 已用「autopilot 传原始 `raw` 而不是防抖后的 `active`」挡住（自动出牌看不见延迟）。
+- 若某场战斗的房间实例被复用（同一 `AbstractRoom` 重新开打），会走「同一房间」分支而不清计划：这条路上 `dropStalePlan()`（按回合判定）仍会拦住真正的旧计划；真出错的表现是计划留在面板上，不会误出牌。
+- 战斗后不清计划期间玩家若打开奖励屏/地图，路线会在下一帧因房间变化被清（正常路径）；只有「房间实例不变而且一直不换房间」时才会长期停留。
+- 回滚：改回原 `active` 单帧判定与翻转即清空即可，无数据/版本兼容问题。
+
+### 对 mod 的实际影响
+
+- 求解/随机流/出牌节奏/选牌应答：零变化（只动面板战斗态与清空时机）。
+- 面板：战斗结束后显示「本场已结束（胜利）· 路线 11/11 步」，路线条保留到离开房间；不再出现「打赢了却回到『点「计算」求解本场』」。
+- 其它 mod：不变（只用 `AbstractDungeon.getCurrRoom()`/`MonsterGroup` 只读字段，不新增反射）。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、jar 1,328,360 B；INSTALL OK sha256 0CC52474E32C7551D55B3D080009A92D5ADA2D89A79140EB849DE7E119883A5A（版本 1.0.10）。
+- 实机由用户自测（m00732）：①打赢后路线条仍在、标题带「本场已结束（胜利）· 路线 N/M 步」；②日志出现一行 `fight over: the route stays on the panel | …`，不再在胜负瞬间出现 `combat detected` 清空；③同一场战斗内不再有中间那条 `combat detected`；④离开房间（进入下一层/事件/下一场）后路线清空。
+
+### 关联
+
+- B36（旧路线残留）：路线条只在 `lines()` 的 `plan == null` 分支清，本修法保证「换房间/下一场」时走这条清空路径，B36 行为不变。
+- m16202-2（计划走完就停手、不自动重算）：未动 `maybeAutopilot` 的停手条件，只把它的入参改回原始战斗态。
+
+### 后续（1.0.11）：离开分支清计数导致每 250ms 振荡，界面一闪一闪（user m03864）
+
+- 现象（user m03864 原话）：「现在界面会一闪一闪的是不是离开战斗要防抖的改动导致的」——是的。日志 C:\Users\YOKI\sts1-engine-solver\solver.log（153 行 / 19,067 B / mtime 16:11:39）在 phase=COMPLETE 的同一房间（room=68037c7d）上每约 250ms 成对出现：
+  `fight state off (debounced): … idleFrames=16` → `fight over: 本场已结束（胜利）` → `fight state on (debounced): … idleFrames=1` → `combat re-detected in the same room: the route stays (no plan)`，一直循环到换屏。
+- 根因：1.0.10 在**离开分支**里写了 `idleFrames = 0; idleSinceMs = 0L;`。下一帧 `raw == false` 时走 `if (idleFrames == 0) idleSinceMs = nowMs; ++idleFrames;` ⇒ `idleFrames == 1` ⇒ `active = !(1 >= 6 && …)` = **true** ⇒ 又翻回「在战斗」；再过 ~250ms 再 off，无限循环。防抖计数被自己清零，等于没有闩锁。
+- 修法（通用，仍是「引擎状态要持续成立」这一条）：离开分支**不再重置** `idleFrames/idleSinceMs`，只在 `raw == true` 的那一帧清零 —— 一旦判定离开就保持离开，直到真的重新进入战斗才复位。删掉的是两行赋值（换成注释说明为什么要闩锁）。
+- 代价/风险：与 1.0.10 相同，无新增字段/方法；行为变化只有「离开后不会在 250ms 后被算回战斗」，因此 `combat re-detected` 只会在真的重新进战时出现。回滚 = 加回那两行（即恢复闪烁）。
+- 构建/安装：BUILD OK 145 源文件、564 entries、1,328,362 B；INSTALL OK sha256 79FFC6C3A32B38197D961D5849B7010C09B9816247BF9E8A6573C7564BD21336（版本 1.0.11）。
+- 验证：由用户自测——战斗结束后界面不再每 0.25 秒闪一次；日志里 `fight state off` 之后不应再出现同一房间的 `fight state on`（除非真的重新开打）。
+
+## B212 引擎异常（搜索分支被丢弃）：ArrayIndexOutOfBoundsException: 2（user m03920，2026-11-20）
+
+### 现象
+
+- 面板标题下出现红字 `引擎异常（搜索分支被丢弃）: 9x ArrayIndexOutOfBoundsException: 2`，结果只剩「未找到胜线 · 给最长生存线 21 步」。
+- 日志 C:\Users\YOKI\sts1-engine-solver\solver.log（252 行 / 274,107 B / mtime 16:21:01）：
+  - `16:20:33.645 WARN a step opened more than 16 selection screen(s); the walk stopped there …`
+  - `16:20:33.645 WARN expand failed (1x): ArrayIndexOutOfBoundsException: 2`，栈 `at sts1solver.search.Solver.joinSegments(Solver.java:1652) ← expandCore(Solver.java:1032)`，随后 2x、3x…共 9 次，每次都跟一条 `a world was left installed; restoring the live game`。
+
+### 根因（两件事，前者导致异常，后者导致那次 16 块屏）
+
+1. **答案数组按「每屏选项数」分配，而不是按「开了几块屏」分配**：`expandCore` 里探针（全取第一项的那条分支）写 `int[] firstPick = new int[n]`，但 `n` 是从两个调用点传进来的**每屏选项上限**（`Solver.java:1923` 与 `:4835` 都传 2），屏数却是 `ids.size()`。一个步骤开出 3 块以上选牌屏时 `pick[i]` 直接越界 ⇒ 异常在 try 内抛出 ⇒ `noteExpandFailure` + `World.forceRestore()` ⇒ 这个动作连同它的所有分支被整条丢弃，搜索少了一块合法分支，于是「未找到胜线」。`joinSegments` 的 `pick[i]`（Solver.java:1652）就是越界点。
+2. **同一块屏被反复重开**：同一次 expand 里先打印「开了超过 16 块屏」，说明某一步的选牌链在沙盒里走不完 —— 每次答完都又开一块（可能是同一块重开）。旧代码只打一句「raise limits.screens=」，既没说是哪张牌/哪个动作，也没有「没进展」判据，于是要么撑到上限、要么像本局这样撞上越界。
+
+### 修法（通用：按实际屏数分配；同一屏重开即停；失败步骤必须点名）
+
+1. `Solver.expandCore`：`int[] firstPick = new int[ids.size()]`（按实际走到的屏数，一屏一格）。
+2. `Solver.joinSegments(List, int[])`：`pick == null || i >= pick.length` 时按 0（取首项）处理，任何长度不匹配都不再抛异常（`int pick` 的重载不变）。
+3. `Solver.expandScreens`：新增「同一屏重开」判据 —— 连续 3 次出现相同 `kind` + 相同 `stateRun(offered)` + 相同选项数，就 `Log.warnEvery("screens-repeat", …)`「同样的 X 屏带着同一批牌回来了 N 次，其中一个答案没有被消费」并返回 `false`（该步没有分支），不再记一条 16 层深、实机根本不会问的答案链。
+4. `Solver.expandCore`：`!complete` 时新增 `Log.warnEvery("step-incomplete", …)`，打印 `action.label`（如 `打击+`/`结束回合`），把「哪一步走不完」写清楚；仍按 B140 的既有规则 `out.clear()`（半条链不是一步的结果）。
+
+### 代价
+
+- Solver.java 单文件、约 25 行（含注释）；探针路径每次 expand 多一个 `stateRun` 字符串比较（仅在开屏时，开屏本身是毫秒级），无新增字段/分配以外的开销。
+- 每条被丢弃的动作多一行日志（`warnEvery` 5s 节流）。
+
+### 风险
+
+- 1 是纯修正：屏数 ≤ n 时行为完全不变（数组内容仍是全 0 ⇒ 仍然全取首项）。
+- 2 只是把越界变成「取首项」；真正的大屏链仍由 `complete`/`out.clear()` 拦住，不会存下半条链。
+- 3 有误判可能：某动作合法地连开两块**完全相同**的选牌屏（同 kind、同牌、同选项数）时，会走到第 3 次才停 ⇒ 该步丢分支（少一条线），不会出错误的计划。要放宽就改 `sameScreen >= 2` 的阈值。
+- 回滚：三处都是局部改动，逐条还原即可，无数据兼容问题。
+
+### 对 mod 的实际影响
+
+- 求解：不再因为一次越界丢掉整个动作的分支；本局的「未找到胜线」有可能因此恢复（也仍可能真的是无胜线）。
+- 随机流/出牌节奏/选牌应答：不变（只动搜索侧的记录方式与日志）。
+- 面板：仍会出现「未找到胜线」，但不再带 `ArrayIndexOutOfBoundsException` 红字；日志会指名走不完的步骤。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、jar 1,328,716 B；INSTALL OK sha256 F69978ECD4C34D91CB27ABB12DF884D9A4CF8053C4DBE86FEC704F2F88D6BC4E（版本 1.0.12）。
+- 实机由用户自测：①同一局面重算，面板不再出现 `ArrayIndexOutOfBoundsException`；②若仍「未找到胜线」，看日志有没有 `step `…` could not be walked` / `the same … screen … came back`，把这两行发出来即可定位是哪张牌/哪块屏。
+
+### 关联
+
+- B140（半条链不算一步）、B153（答案没结算完）、B208（一屏一条答案）：本次没有改它们的判据，只是让「走不完」这件事有名有姓。
+- B211（战斗态翻转）：同一份日志里两者无交集（本次没有 `fight state` 行）。
+

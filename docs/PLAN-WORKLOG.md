@@ -3038,3 +3038,34 @@ user m03369：「计划妥当结束回合不选牌的话不自动出牌，但是
 | 构建/安装（1.0.9 定版后重编） | BUILD OK 145 源文件、564 entries、1,327,907 B；INSTALL OK sha256 EF56E1C7F68C8521B9D2CB5563D381E01CFF098D4181571E5609028543FA8E02；jar 内 `ModTheSpire.json` 版本已核为 1.0.9（覆盖上面 1,326,905 B / FB8EAD62… 那一版） | ✅ |
 | 创意工坊 | jar 先同步到 `D:\mods-workshop\sts1-engine-solver\content\sts1-engine-solver.jar`（sha256 同上）再上传，日志 `_tmp\upload-workshop-1.0.9*.log`（首次 SteamResult=Fail，重传成功，判据仍是 UploadingContent + Successfully updated workshop item!） | ✅ |
 | GitHub | 提交 `7db69a0`（B210 代码+文档）与 `f1e265b`（1.0.9 版本号/简介）已推 origin master | ✅ |
+
+
+## B211 打赢那一帧清掉整条路线与结果（2026-11-20）
+
+user m03559「看一下最新日志，正确打赢为什么显示路线被丢弃？不要修改，先回答我问题」→ m03712「不是的，面板这场战斗最后一步是结束回合->选择牌，不是快斩」→ m03754「改」。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 根因 | `tick()` 的 `active` 直接取当帧实况（`inRoomCombat() && (!combatOver \|\| overFrames < 20)`）；胜利瞬间 `room.phase`/`isBattleOver` 先变，`inRoomCombat()` 单帧为假 ⇒ 翻转分支 `plan = null; status = "idle"; Hud.set(null)` ⇒ `lines()` 的 `plan == null` 早退 `route.clear()`；333ms 后房间读回 COMBAT 再翻一次（日志两条 `combat detected`）。overFrames 的 20 帧宽限只保护 `combatOver`，保护不了 `inRoomCombat()` 单帧为假。 | ✅ |
+| 代码 | `Gameplay.java`：新增字段 `idleFrames`/`idleSinceMs`/`roomSeen`；`active` 离开侧防抖（连续 ≥6 帧且 ≥250ms 才 false，进入不延缓）；翻转成 true 时按 `getCurrRoom()` 实例判同一场（同房间回来只记 `combat re-detected in the same room`，不动计划）；翻转成 false 时保留计划并写 `本场已结束（…）· 路线 N/M 步`，胜负由 `fightOutcome()` 按棋盘判；`lines()` headline 在 `!hasPlan()` 时追加 status；非战斗期只有房间实例变化才清路线；新增 `roomNow/playerDeadNow/fightOutcome/logFightFlip`，每次翻转打一行五个输入；`reset()`/`detectWorldSwitch()` 清新字段 | ✅ |
+| 代价 | 单文件、3 个字段、4 个私有方法；每帧多一次 `getCurrRoom()` 与两个整数比较，无分配/无反射；战斗结束后路线在面板多停留到离开房间 | ✅ 已写 PLAN-BUGS |
+| 风险 | 防抖让「离开战斗」晚 ~250ms（自动出牌传原始 `raw` 所以看不见）；房间实例被复用时不清计划（`dropStalePlan()` 仍兜底）；回滚 = 改回单帧判定 + 翻转即清 | ✅ 已写 PLAN-BUGS |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,328,360 B；INSTALL OK sha256 0CC52474E32C7551D55B3D080009A92D5ADA2D89A79140EB849DE7E119883A5A | ✅ |
+| 文档 | PLAN-BUGS.md ## B211、PLAN.md 状态表 B211 行、本表 | ✅ |
+| 版本 | `resources/ModTheSpire.json` → 1.0.10；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.10 bullet（**工坊 `config.json` 未动**：未上传，changeNote 等到上传时再写） | ✅ |
+| 实机验证 | 由用户自测：①打赢后路线条仍在、标题带「本场已结束（胜利）· 路线 N/M 步」；②日志见 `fight over: the route stays on the panel`；③同一场战斗内不再出现中间那条 `combat detected`；④离开房间后路线清空 | ⏳ 待实机 |
+| **回归（1.0.11）** | user m03864「现在界面会一闪一闪的是不是离开战斗要防抖的改动导致的」——是。1.0.10 的离开分支清了 `idleFrames/idleSinceMs`，下一帧 `idleFrames=1` 又被判成在战斗，日志每 ~250ms 一 off 一 on（同一房间 68037c7d、phase=COMPLETE）。修法：离开分支不重置计数，只在 `raw==true` 帧清零（离开即闩锁）。BUILD OK 1,328,362 B / sha256 79FFC6C3…；版本 1.0.11 | ✅ 已装，待实机确认不再闪 |
+
+## B212 引擎异常 AIOOBE 与 16 块屏（2026-11-20）
+
+user m03920「显示引擎异常，为什么」（面板红字 `9x ArrayIndexOutOfBoundsException: 2`，结果只剩「未找到胜线 · 最长生存线 21 步」）。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 取证 | solver.log 252 行 / 274,107 B：`16:20:33.645 a step opened more than 16 selection screen(s)` 紧跟 `expand failed (1x): ArrayIndexOutOfBoundsException: 2`，栈 `joinSegments(Solver.java:1652) ← expandCore(Solver.java:1032)`，共 9 次，每次跟 `a world was left installed` | ✅ |
+| 根因 | ①探针 `int[] firstPick = new int[n]` 用「每屏选项上限 n=2」（两处调用点都传 2）当屏数，屏数实际是 `ids.size()` ⇒ 3 块以上屏时 `pick[i]` 越界 ⇒ 整条动作+分支被丢；②同一步的选牌链在沙盒里开屏超过 16 次，旧日志不说哪张牌、也没有「没进展」判据 | ✅ |
+| 修法 | `Solver.java`：①`new int[ids.size()]`；②`joinSegments(List,int[])` 对 `i >= pick.length` 取首项；③`expandScreens` 连续 3 次同 kind+同 `stateRun(offered)`+同选项数 ⇒ `screens-repeat` 警告并 `return false`；④`!complete` 打 `step-incomplete` 带 `action.label` | ✅ |
+| 代价/风险 | 单文件约 25 行；屏数 ≤ n 时行为不变；重复屏判据可能丢掉「合法连开两块相同屏」的那一步（只会少一条线，不会出错误计划） | ✅ 已写 PLAN-BUGS |
+| 构建/安装 | BUILD OK 145 源文件、564 entries、1,328,716 B；INSTALL OK sha256 F69978ECD4C34D91CB27ABB12DF884D9A4CF8053C4DBE86FEC704F2F88D6BC4E | ✅ |
+| 版本 | `resources/ModTheSpire.json` → 1.0.12；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.12 bullet（**工坊 config.json 未动，未上传**） | ✅ |
+| 实机验证 | 用户自测：同一局面重算不再出现 AIOOBE 红字；若仍「未找到胜线」，日志里的 `step … could not be walked` / `the same … screen … came back` 两行可定位具体牌/屏 | ⏳ 待实机 |

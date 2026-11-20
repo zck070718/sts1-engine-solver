@@ -61,6 +61,18 @@ public final class Gameplay {
      */
     private static boolean solveQueued;
     private static int overFrames;
+    /**
+     * B211 (user m03754): frames the live room has read "no combat" in a row, and the wall clock of
+     * the first of them. The fight state is sampled from live statics once per frame; those statics
+     * flicker at the end of a fight (see the debounce in {@link #tick()}).
+     */
+    private static int idleFrames;
+    private static long idleSinceMs;
+    /**
+     * B211: the room the shown route belongs to. Only a DIFFERENT room is a new fight; the same room
+     * coming back is the flicker, and clearing the plan there is what dropped a won route.
+     */
+    private static AbstractRoom roomSeen;
     private static int verified;
     private static String escapeNote;
     private static final List<Solver.Step> history;
@@ -1417,31 +1429,99 @@ public final class Gameplay {
             boolean combatOver = inRoomCombat && Driver.combatOver();
             overFrames = combatOver ? ++overFrames : 0;
             // A finished fight keeps the panel "in combat" for a few frames so the last step can settle.
-            boolean active = inRoomCombat && (!combatOver || overFrames < 20);
-            Gameplay.maybeAutopilot(active);
+            boolean raw = inRoomCombat && (!combatOver || overFrames < 20);
+            // B211 (user m03754): those statics flicker. The live room reports "no combat" for a frame
+            // or two while the fight is still winding down (a hit landing, a fade-out), and taking the
+            // FIRST such frame as the end of the fight nulled the plan and wrote "idle" -- a fight won
+            // on the last planned step lost its route and its result ("打赢了却显示路线已丢弃").
+            // Leaving now needs BOTH six frames and 250 ms of quiet: a frame count alone means a
+            // different wall time on a slow frame, a clock alone misses a one-frame drop. ENTERING is
+            // never delayed -- a real fight has to be recognised on its first frame.
+            long nowMs = now();
+            boolean active;
+            if (raw) {
+                idleFrames = 0;
+                idleSinceMs = 0L;
+                active = true;
+            } else {
+                if (idleFrames == 0) {
+                    idleSinceMs = nowMs;
+                }
+                ++idleFrames;
+                active = !(idleFrames >= 6 && nowMs - idleSinceMs >= 250L);
+            }
+            // Autopilot keeps the RAW state: delaying it would let it play a step on a board that is
+            // already finished. Only the panel state is debounced.
+            Gameplay.maybeAutopilot(raw);
             if (active != inCombat) {
+                Gameplay.logFightFlip(active, inRoomCombat, combatOver);
                 inCombat = active;
+                AbstractRoom here = Gameplay.roomNow();
                 if (active) {
-                    plan = null;
-                    step = 0;
-                    status = "idle";
-                    hintShown = false;
-                    // B147: the divergence replan allowance is per COMBAT -- a new fight starts with a
-                    // fresh one, so one bad simulation cannot silently eat the allowance of the next.
-                                origin = ContentOrigin.inspect();
-                    Log.info("combat detected: the 计算 button solves it | " + origin.describe());
+                    // B211: only a DIFFERENT room is a new fight. The same room coming back is the
+                    // flicker above, and clearing the plan there is exactly what lost the route.
+                    boolean sameFight = here != null && here == roomSeen;
+                    if (here != null) {
+                        roomSeen = here;
+                    }
+                    if (sameFight) {
+                        Log.info("combat re-detected in the same room: the route stays ("
+                                + (plan == null ? "no plan" : step + "/" + plan.plan.size() + " steps, status " + status) + ")");
+                    } else {
+                        plan = null;
+                        step = 0;
+                        stepTarget = -1;
+                        status = "idle";
+                        hintShown = false;
+                        // B147: the divergence replan allowance is per COMBAT -- a new fight starts with a
+                        // fresh one, so one bad simulation cannot silently eat the allowance of the next.
+                        origin = ContentOrigin.inspect();
+                        Log.info("combat detected: the 计算 button solves it | " + origin.describe());
+                    }
                 } else {
-                    plan = null;
-                    step = 0;
-                    status = "idle";
-                    hintShown = false;
+                    // B211 (user m03754): the route SURVIVES the end of its fight. It used to be
+                    // nulled here together with a "idle" status, so a won fight showed an empty panel
+                    // and the player was told nothing about the result. It is cleared when the room is
+                    // left (see the block below), not when the fight ends.
+                    String outcome = Gameplay.fightOutcome();
+                    int steps = plan == null ? 0 : plan.plan.size();
                     pending = null;
                     autopilot = false;
                     lastRisk = null;
                     lethalConfirmed = false;
                     overFrames = 0;
-                    Hud.set(null);
+                    // B211: do NOT reset the idle run here. Resetting it made the next frame count
+                    // idleFrames=1 -> "still in combat" -> flip back on, and the panel blinked
+                    // off/on every 250 ms (logged as fight state off/on pairs). The counter is
+                    // cleared only by a frame that really IS in combat (raw == true), so leaving
+                    // latches until the fight actually comes back.
+                    hintShown = false;
+                    if (plan != null) {
+                        status = "本场已结束（" + outcome + "）· 路线 " + step + "/" + steps + " 步";
+                        Hud.set(Gameplay.lines());
+                        Log.info("fight over: the route stays on the panel | " + status);
+                    } else {
+                        status = "本场已结束（" + outcome + "）";
+                        Hud.set(null);
+                        Log.info("fight over: " + status);
+                    }
                     Hud.markStep(-1, -1, false);
+                }
+            }
+            // B211: a route that outlived its fight is cleared when the ROOM is left (reward screen
+            // then map, an event, the next fight), and never on the frames the room is momentarily
+            // absent. A null room keeps the old stamp for exactly that reason.
+            if (!inCombat && plan != null) {
+                AbstractRoom outside = Gameplay.roomNow();
+                if (outside != null && outside != roomSeen) {
+                    roomSeen = outside;
+                    plan = null;
+                    step = 0;
+                    stepTarget = -1;
+                    status = "idle";
+                    sts1solver.ui.Panel.clearCaches();
+                    Hud.set(Gameplay.lines());
+                    Log.info("room changed: the finished route is cleared");
                 }
             }
             if (inCombat && plan == null && !hintShown) {
@@ -1629,6 +1709,84 @@ public final class Gameplay {
         return AutoPace.due(now, nextActionAtMs) ? 0L : nextActionAtMs - now;
     }
 
+    /** B211: the live room, or null while it is momentarily absent. */
+    private static AbstractRoom roomNow() {
+        try {
+            return AbstractDungeon.getCurrRoom();
+        }
+        catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** B211: is the player dead (the loss half of "how did the fight end")? */
+    private static boolean playerDeadNow() {
+        try {
+            return AbstractDungeon.player != null
+                    && (AbstractDungeon.player.isDead || AbstractDungeon.player.currentHealth <= 0);
+        }
+        catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * B211 (user m03754): one line per fight-state flip, with the five inputs it was decided on.
+     *
+     * <p>The old code flipped on a single frame of evidence and logged only "combat detected", so a
+     * fight that ended with two "combat detected" lines a third of a second apart had no cause in the
+     * log. These are the exact fields {@link #inRoomCombat()} and {@link Driver#combatOver()} read.
+     */
+    private static void logFightFlip(boolean to, boolean inRoomCombat, boolean combatOver) {
+        String inputs;
+        try {
+            AbstractRoom room = AbstractDungeon.getCurrRoom();
+            inputs = "player=" + (AbstractDungeon.player != null)
+                    + " room=" + (room == null ? "-" : Integer.toHexString(System.identityHashCode(room)))
+                    + " phase=" + (room == null ? "-" : String.valueOf(room.phase))
+                    + " battleOver=" + (room != null && room.isBattleOver)
+                    + " monsters=" + (room == null || room.monsters == null ? "-" : room.monsters.monsters.size())
+                    + " inRoomCombat=" + inRoomCombat + " combatOver=" + combatOver;
+        }
+        catch (Throwable t) {
+            inputs = "unreadable: " + t;
+        }
+        Log.info("fight state " + (to ? "on" : "off") + " (debounced): " + inputs
+                + " idleFrames=" + idleFrames + " overFrames=" + overFrames);
+    }
+
+    /**
+     * B211 (user m03754): how the fight that just ended came out, read from the board itself.
+     *
+     * <p>{@code Driver.combatOver()} is already false by the time the panel flips (it needs the room
+     * in COMBAT, and the victory sets isBattleOver first), so "did we win" cannot be read from it.
+     * The board can still answer: dead player = loss, a living monster left = the fight was left
+     * (Smoke Bomb), otherwise the monsters are gone and it is a win.
+     */
+    private static String fightOutcome() {
+        try {
+            if (AbstractDungeon.player == null) {
+                return "已离开战斗";
+            }
+            if (Gameplay.playerDeadNow()) {
+                return "失败";
+            }
+            com.megacrit.cardcrawl.monsters.MonsterGroup group = AbstractDungeon.getMonsters();
+            if (group != null) {
+                for (int i = 0; i < group.monsters.size(); ++i) {
+                    AbstractMonster m = group.monsters.get(i);
+                    if (m != null && !m.isDeadOrEscaped() && m.currentHealth > 0) {
+                        return "已离开战斗";
+                    }
+                }
+            }
+            return "胜利";
+        }
+        catch (Throwable ignored) {
+            return "已结束";
+        }
+    }
+
     private static boolean inRoomCombat() {
         try {
             if (AbstractDungeon.player == null) {
@@ -1671,6 +1829,10 @@ public final class Gameplay {
         lethalConfirmed = false;
         weakConfirmed = false;
         lastRisk = null;
+        // B211: reset() is a new run (or an explicit clear): no room owns a route any more.
+        roomSeen = null;
+        idleFrames = 0;
+        idleSinceMs = 0L;
         // P2-27: the text caches belong to a plan that no longer exists.
         sts1solver.ui.Panel.clearCaches();
         Hud.set(Gameplay.lines());
@@ -1740,6 +1902,9 @@ public final class Gameplay {
         lastRisk = null;
         inCombat = false;
         hintShown = false;
+        idleFrames = 0;
+        idleSinceMs = 0L;
+        roomSeen = null;
         status = "\u65b0\u5bf9\u5c40/\u8bfb\u6863\uff1a\u6c42\u89e3\u5668\u5df2\u6e05\u7a7a\uff08\u70b9\u300c\u8ba1\u7b97\u300d\u91cd\u7b97\uff09";
         Hud.set(null);
         Hud.markStep(-1, -1, false);
@@ -1982,7 +2147,11 @@ public final class Gameplay {
                 + " · " + Gameplay.plan.nodes + " 节点 · " + Gameplay.plan.millis + "ms"
                 + (Gameplay.plan.potionsUsed > 0 ? " · 药水 " + Gameplay.plan.potionsUsed : "")
                 + (verified > 0 ? " · 已校验 " + verified + " 步" : "")
-                + (autopilot ? " · 自动执行中 · " + AutoPace.label() : ""));
+                + (autopilot ? " · 自动执行中 · " + AutoPace.label() : "")
+                // B211 (user m03754): a plan whose steps are all done used to be shown without its
+                // verdict -- the title row only prints the status while there is NO plan, and the
+                // route is now kept after the fight, so the result has to be said here.
+                + (!Gameplay.hasPlan() && !status.isEmpty() ? " · " + status : ""));
         // The actions are no longer text rows: they live in the turn rows of the pill strip (see
         // route() and Panel.drawRoute), which can hold the whole plan and scroll instead of folding.
         rowSteps.clear();

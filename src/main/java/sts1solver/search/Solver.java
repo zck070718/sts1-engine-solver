@@ -1028,7 +1028,12 @@ public final class Solver {
             // B205 (user m01995): the plan carries plain ids. The "which copy" detail lives in
             // Action.screenOffered (the states each screen offered), never in the answer string --
             // the answer string is what the panel prints.
-            int[] firstPick = new int[n];
+            // B212 (user m03920): one slot per screen the walk actually found. `n` is the
+            // per-screen OPTION cap the caller asked for (2 from both call sites), not a screen
+            // count: a step that opened three or more pickers used to index past this array and
+            // throw ArrayIndexOutOfBoundsException here, which dropped the whole action (and its
+            // branches) out of the search -- the panel then printed 引擎异常 and lost the win line.
+            int[] firstPick = new int[ids.size()];
             probe.choice = Solver.joinSegments(ids, firstPick);
             probe.choiceDisplay = Solver.joinSegments(displays, firstPick);
             probe.choiceUuids = Solver.joinSegments(uuids, firstPick);
@@ -1071,6 +1076,12 @@ public final class Solver {
             return out;
         }
         if (!complete) {
+            // B212 (user m03920): say WHICH step could not be walked. Without the label the log
+            // only had "a step opened more than 16 selection screen(s)" and no way to name the card
+            // or the screen that kept reopening.
+            Log.warnEvery("step-incomplete", 5000L, "step "
+                    + (action == null ? "(already queued)" : action.label)
+                    + " could not be walked to the end of its screen chain; the action has no branch");
             // B140 (user m09491): the walk stopped with a picker still waiting, so the digest this
             // probe read back is a HALF-DONE step, not the step's outcome. Storing it is how the
             // sandbox ended up "not having swapped the cards" in a fight that did swap them. A step
@@ -1266,6 +1277,12 @@ public final class Solver {
                                         java.util.List<String> kinds,
                                         java.util.List<String> offeredPrints, int n) {
         int maxScreens = Math.max(1, Limits.screens());
+        // B212 (user m03920): a picker that reopens with the SAME kind and the SAME cards can only
+        // ask the same question again -- answering it a second time cannot move the fight. One log
+        // line per walk is enough to say so, and the walk stops instead of recording a 16-deep
+        // answer chain that the live game will never ask for.
+        String lastScreenKey = null;
+        int sameScreen = 0;
         for (int s = 0; s < maxScreens; s++) {
             if (!Driver.pumpUntilSelection(24)) {
                 // No picker is waiting: the chain this step opened is finished, and the state that
@@ -1293,7 +1310,21 @@ public final class Solver {
                     Driver.selectionCandidates();
             // B204: the STATE run (not the card-by-card print list) is what a live screen is compared
             // with: same states in any order is the same screen.
-            offeredPrints.add(Solver.stateRun(offered));
+            String offeredRun = Solver.stateRun(offered);
+            offeredPrints.add(offeredRun);
+            String screenKey = kind + "#" + offeredRun + "#" + options.size();
+            if (screenKey.equals(lastScreenKey)) {
+                if (++sameScreen >= 2) {
+                    Log.warnEvery("screens-repeat", 5000L, "the same " + kind + " screen ("
+                            + options.size() + " option(s)) came back " + (sameScreen + 1)
+                            + " times in a row with the same cards; one of the answers is not being"
+                            + " consumed, so the answers for this step are incomplete");
+                    return false;
+                }
+            } else {
+                lastScreenKey = screenKey;
+                sameScreen = 0;
+            }
             for (int i = 0; i < options.size(); i++) {
                 screenIds.add(Driver.namesOf(options.get(i)));
                 screenDisplays.add(Driver.displayNamesOf(options.get(i)));
@@ -1649,7 +1680,8 @@ public final class Solver {
             if (screen == null || screen.isEmpty()) {
                 continue;
             }
-            int at = pick == null ? 0 : Math.min(Math.max(pick[i], 0), screen.size() - 1);
+            int at = pick == null || i >= pick.length ? 0
+                    : Math.min(Math.max(pick[i], 0), screen.size() - 1);
             sb.append(screen.get(at) == null ? "" : screen.get(at));
         }
         return sb.toString();
