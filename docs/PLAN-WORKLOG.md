@@ -3021,3 +3021,17 @@ RelicStats 的 `SneckoInfo#cards/#costs` 静态量是被写脏后还原的**统�
 | 实机验证 | 由用户自测：屏出现约 0.25s 后才点；计划没答案的屏停手提示、可点「自动」继续 | ⏳ 待实机 |
 | 发布 | 版本号 1.0.8（B208+B209 同版）：`resources/ModTheSpire.json` + `docs/WORKSHOP-DESCRIPTION.md` + 工坊 `config.json`（GBK/936 无 BOM，4,890 B，备份 `config.json.bak-20261120b`，description 的「当前版本」同步 1.0.8、节奏默认改 450ms，changeNote 重写）；已上传创意工坊、已推 GitHub 145d199 | ✅ |
 
+
+## B210 计划妥当「不选」屏不再被当成「计划没有答案」（2026-11-20）
+
+user m03369：「计划妥当结束回合不选牌的话不自动出牌，但是玩家手动点击确定可以正常继续打」；m03419「『不选』改」= 批准按上一轮方案动手。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 根因 | `Action.choice` 与 `Action.screenKinds` 是两根并行串；单屏 + 答案「不选」时 choice 整串为空，而 `choiceSegments("")`/`splitChain("")` 返回 0 段 ⇒ 答案数被读成 0，与「这一步没开屏」不可区分 ⇒ `answerNextScreen` 判 `no-plan-answer` 停手、`answerEndTurnScreens` 报风险未知 ⇒ 闸门 STOP。屏数判据（`Action.withChoice`/`choiceScreenCount()`/`plannedScreens()`）本来就是对的，回放侧 B190 也早按 screenKinds 判，所以只有实机读取方错 | ✅ |
+| 代码 | `Gameplay.java`：新增 `answersFor(joined, screens)`（screens<=0→空；==1→{joined}；>1→按 `|` 切分补空）；`answerNextScreen` 用 `answersFor(pendingChoice, screens)` 判用完与取 ids；`answerEndTurnScreens` 屏数改 `max(chainCount(choice), chainCount(screenKinds))` 再用 `answersFor`；每块被作答的屏固定打一行 `screen i/N answer=[…]`（空答案 `(pick nothing)`） | ✅ |
+| 构建 | BUILD OK 145 源文件、564 entries、1,326,905 B | ✅ |
+| 安装 | INSTALL OK → `D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，sha256 FB8EAD62A0051EB40A174F2B2904B749818CD87340849B27BE627917726A9DC4；已核包内 `sts1solver/Gameplay.class` 含新字符串 `pick nothing` | ✅ |
+| 文档 | PLAN-BUGS.md ## B210、PLAN.md 状态表 B210 行、本表 | ✅ |
+| 实机验证 | 由用户自测：①留牌屏「不选」约 0.25s 后自动点确定并继续；②日志见 `answer=[] (pick nothing)`；③不再出现 `no-plan-answer: the plan has 0 answer(s)` 与「结束回合里开了一块计划没有答案的选牌屏」；④带卡牌的选牌屏不变 | ⏳ 待实机 |
+| 发布 | 未发布：版本号仍为 1.0.8，工坊/GitHub 未动（等用户实机确认后再定版本号与 changeNote） | ⏳ 待定 |

@@ -2525,7 +2525,13 @@ public final class Gameplay {
      * could not be finished.
      */
     private static EndTurnRisk answerEndTurnScreens(Action answers, int hpBefore, int incoming) {
-        String[] choices = Gameplay.splitChain(answers == null ? null : answers.choice);
+        // B210 (user m03419): the risk gate counts SCREENS the same way the plan does (screenKinds
+        // included). Splitting only the answer chain read a single "pick nothing" screen as "the plan
+        // has no answer here", so the turn was reported unknown and the autopilot stopped before it
+        // could press 确定.
+        int screens = Math.max(Action.chainCount(answers == null ? null : answers.choice),
+                Action.chainCount(answers == null ? null : answers.screenKinds));
+        String[] choices = Gameplay.answersFor(answers == null ? null : answers.choice, screens);
         String[] displays = Gameplay.splitChain(answers == null ? null : answers.choiceDisplay);
         String[] uuids = Gameplay.splitChain(answers == null ? null : answers.choiceUuids);
         String[] prints = Gameplay.splitChain(answers == null ? null : answers.choicePrints);
@@ -3277,9 +3283,35 @@ public final class Gameplay {
         return joined.split("\\|", -1);
     }
 
+    /**
+     * B210 (user m03419): a plan's answer chain read against the NUMBER OF SCREENS the step walked.
+     *
+     * <p>The chain has one entry per screen, and "picked nothing" is a legal entry. Written out, a
+     * single such screen is the empty string -- which splits to zero entries and used to be read as
+     * "this step has no answer", so a 计划妥当 "不选" screen looked like a screen the plan never
+     * walked (autopilot stopped, end-turn risk unknown). The screen count is already on the plan
+     * (screenKinds / pendingScreens, see Action.withChoice); reading the chain against it restores
+     * the one invariant the writer always kept.
+     */
+    private static String[] answersFor(String joined, int screens) {
+        if (screens <= 0) {
+            return new String[0];
+        }
+        if (screens == 1) {
+            return new String[]{joined == null ? "" : joined};
+        }
+        String[] parts = (joined == null || joined.isEmpty()) ? new String[0] : joined.split("\\|", -1);
+        String[] out = new String[screens];
+        for (int i = 0; i < screens; i++) {
+            out[i] = i < parts.length ? parts[i] : "";
+        }
+        return out;
+    }
+
     private static String segmentAt(String[] values, int i) {
         return values != null && i >= 0 && i < values.length ? values[i] : "";
     }
+
 
     private static int choiceScreenCount() {
         // B208 (user m02882): the plan carries one answer per screen the step opens, because the
@@ -3304,18 +3336,21 @@ public final class Gameplay {
         if (screens == 0) {
             return false;
         }
-        if (pendingChoiceAt >= choiceSegments(pendingChoice).length) {
+        // B210 (user m03419): one answer per SCREEN, read against the screen count -- a single screen
+        // answered with nothing is one answer (empty), not zero.
+        String[] answers = answersFor(pendingChoice, screens);
+        if (pendingChoiceAt >= answers.length) {
             // B209 (user m03085): the plan's answers are used up and the fight still has a screen
             // open -- the fight opened one the search never walked. Clicking its first option would
             // take a branch the plan did not cost, which is how a "5 turn no damage" line stops
             // being the line that was searched. STS2's autoplay throws in exactly this case
             // (NativeChoicePlanNotRequestedException); here it is a refusal the caller turns into a
             // stop-with-prompt, and the plan and the pending step stay untouched.
-            Driver.refuseNow("no-plan-answer", "the plan has " + choiceSegments(pendingChoice).length
+            Driver.refuseNow("no-plan-answer", "the plan has " + answers.length
                     + " answer(s); this is screen " + (pendingChoiceAt + 1) + "/" + screens);
             return false;
         }
-        String[] choices = choiceSegments(pendingChoice);
+        String[] choices = answers;
         String[] kinds = choiceSegments(pendingChoiceKinds);
         String[] displays = choiceSegments(pendingChoiceDisplay);
         String[] uuids = choiceSegments(pendingChoiceUuids);
@@ -3327,16 +3362,24 @@ public final class Gameplay {
         // B203 (user m01393): was the card this answer names ON the screen the sandbox walked? The
         // live screen is asked the same question below; a "no" on either side is the evidence that
         // the two walks are on different screens, and it is printed before any click.
+        String ids = segmentAt(choices, at);
+        String kindAt = segmentAt(kinds, at);
         String want = segmentAt(prints, at);
+        // B210 (user m03419): always one line per answered screen. The old line only printed when the
+        // plan carried a state fingerprint, so a "pick nothing" screen left no trace at all and a
+        // stop on it was unreadable from the log.
         if (!want.isEmpty()) {
-            Log.info("screen " + (at + 1) + "/" + screens + " answer=[" + segmentAt(choices, at)
-                    + "] planState=[" + want + "]"
+            Log.info("screen " + (at + 1) + "/" + screens + " answer=[" + ids + "] planState=[" + want + "]"
                     + (offered.length > at && !offered[at].isEmpty()
                             ? " sandboxOffered=[" + brief(offered[at]) + "]" : " sandboxOffered=-")
                     + " liveOffered=[" + brief(Solver.stateRun(Driver.selectionCandidates())) + "]");
+        } else {
+            Log.info("screen " + (at + 1) + "/" + screens + " answer=[" + ids + "]"
+                    + (ids.trim().isEmpty()
+                            ? " (pick nothing)" : (want.isEmpty() ? " (no state)" : ""))
+                    + " kind=" + (kindAt.isEmpty() ? "-" : kindAt)
+                    + " liveOffered=[" + brief(Solver.stateRun(Driver.selectionCandidates())) + "]");
         }
-        String ids = segmentAt(choices, at);
-        String kindAt = segmentAt(kinds, at);
         boolean ok;
         boolean screenRead = ids.trim().isEmpty() && kindAt.isEmpty();
         if (screenRead) {

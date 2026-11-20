@@ -5218,3 +5218,56 @@ src/main/java/sts1solver/drive/Driver.java：
 - 构建：BUILD OK 145 源文件、564 entries、jar 1,326,606 B。
 - 实机由用户自测（m00732）：①屏出现到被点之间肉眼可见约 0.25s；②计划有答案的屏照常执行；③计划没有答案的屏停手并提示，点「自动」可继续；④`autoplaySelectMinOpenMs=0` 时回到立刻点。
 
+### 后续
+
+- **B210（2026-11-20，user m03369/m03419）修正了本条目「计划没有答案」的判据**：计划只开一块屏且答案是「不选」时 choice 是空串，原先按切分段数读成 0 个答案，把合法的空答案当成「计划没有答案」停手。现在 nswerNextScreen/nswerEndTurnScreens 都按**屏数**（max(chainCount(choice), chainCount(screenKinds))）读答案链，空答案是合法答案；真正计划外的屏仍然停手。若本条目与 B210 描述冲突，以 B210 为准。
+
+
+## B210 计划妥当结束回合选「不选」，自动出牌停住而手点确定能继续（user m03369，2026-11-20）
+
+### 现象
+
+- user m03369（原话）：「计划妥当结束回合不选牌的话不自动出牌，但是玩家手动点击确定可以正常继续打」；同一条消息要求其他都先不要动，只给这个 bug 的方案。
+- 日志形态：计划里该步写作 `结束回合（不选 → 确定）`，实机留牌屏（`screen=HAND_SELECT numCardsToSelect=1 upTo=true canPickZero=true kind=HAND`）打开后自动出牌不动，日志出现 `selection screen the plan has no answer for: no-plan-answer: the plan has 0 answer(s); this is screen 1/1`，并伴随 `end-turn risk: 风险预测失败: 结束回合里开了一块计划没有答案的选牌屏（第 1 块）`。
+
+### 根因
+
+- 计划用两根并行串记录一次动作开的屏：`Action.choice`（每屏选了什么）与 `Action.screenKinds`（每屏是什么屏）。`Solver.joinSegments`（search/Solver.java:1642）对每块屏写一段、用 `|` 连接 ⇒ N≥2 时永远有分隔符，**只有一块屏且答案为空时整串就是空串**，与「这一步根本没开屏」无法区分。
+- 屏数判据本来是对的：`Action.withChoice`（search/Action.java:286-321）`int screens = Math.max(chainCount(raw), chainCount(kindsNow));`、`Gameplay.choiceScreenCount()`、`Gameplay.plannedScreens()` 都是 `max(choice, screenKinds)`，B190 注释写明「a screen answered with nothing is still a screen this step walked (screenKinds is what says so)」。
+- 但两处实机读取方用「切分后的段数」当答案数：`choiceSegments("")`（Gameplay.java:3273-3278）与 `splitChain("")`（:2576-2581）都返回 `new String[0]` ⇒ `answerNextScreen` 第 3307 行 `pendingChoiceAt(0) >= 0` 立即成立 ⇒ `refuseNow("no-plan-answer", "the plan has 0 answer(s)…")` ⇒ `pollPending`（:3813-3828）见该前缀停手；同一歧义让 `answerEndTurnScreens`（:2534）首块屏就 `answered >= choices.length(0)` ⇒ 风险未知 ⇒ 结束回合闸门 STOP。
+- 不是计划妥当/卡牌/遗物/随机流的问题：回放侧 `Solver.answerForReplay`（:2592-2636）B190 起就按「`choice` 非空 **或** `screenKinds` 非空」判期望，同一份计划在沙盒里能正常回放；`Driver.resolveSelectionByNames`（drive/Driver.java:2173-2199）里空答案是合法答案（`askedEmpty`），`Driver.resolveSelectionLiveEmpty` 已实现「不选 + 确定」。
+
+### 修法（通用：屏数以计划为准，答案按屏数读）
+
+1. 新增 `Gameplay.answersFor(String joined, int screens)`：`screens<=0` → 空数组；`screens==1` → `{joined}`（空串即一段「不选」）；`screens>1` → 按 `|` 切分、不足补 `""`。它不读牌名、不读屏类型，只把写入端本来就成立的不变量「答案数 == 屏数」补回来。
+2. `answerNextScreen`：`String[] answers = answersFor(pendingChoice, screens)`，`pendingChoiceAt >= answers.length` 判用完，`choices = answers` ⇒ 一屏空答案走 3349 行既有分支 `Driver.resolveSelectionLiveEmpty(kindAt)`（不选 + 确定）。
+3. `answerEndTurnScreens`：`int screens = Math.max(Action.chainCount(answers.choice), Action.chainCount(answers.screenKinds))`，`choices = answersFor(answers.choice, screens)` ⇒ `answered >= choices.length` 恢复成「真的计划外屏」才报未知风险。
+4. 诊断：`answerNextScreen` 原来只在 `prints` 非空时打 `screen i/N answer=[…]`，空答案屏一行日志都没有；改为每块屏必打一行，空答案显示 `answer=[] (pick nothing)`。
+
+### 代价
+
+- 代码：`Gameplay` 新增 1 个私有函数（约 20 行含注释）+ 3 处调用改写 + 1 个日志分支，净 +约 35 行；不加字段、不改 `Action` 序列化、不动 Solver/搜索/面板。
+- 运行：每次作答构造一次小数组（纳秒级），搜索侧零影响。
+- 日志：每块被作答的屏固定一行（原来只在有计划状态时才有行），不随检索时长增长。
+
+### 风险
+
+- 归一化只在 `screens == 1` 时把空串当一段；`screens == 0` 仍走原路，**真·计划外屏仍然停手**（`pollPending` 的 `planned.isEmpty() && plannedScreens()==0` 守卫与 B209 语义不变）。
+- 计划记 1 块屏、实机开第 2 块：`pendingChoiceAt(1) >= answers.length(1)` 仍停手，不会多点一次。
+- 唯一的行为放宽：某份历史计划「记了 screenKinds、答案串确实缺失」时按「不选 + 确定」执行而不是停手。该语义与回放侧 B190 完全一致（沙盒本来就这么执行），因此不会出现实机/沙盒判定不同，但这份计划不再触发保护性停手。
+- 回滚：revert 第 2、3 条两处调用即可，无数据/版本兼容问题。
+
+### 对 mod 的实际影响
+
+- 面板：零变化（不动 `Hud`、不动计划文本、不出现屏内序号）。
+- 自动出牌：留牌屏答案为「不选」时，等一拍（B209 的 `autoplaySelectMinOpenMs`，默认 250ms）后自己点确定并继续；结束回合风险闸门不再因该屏报「风险未知」。任何「允许选 0 张」的单屏都同样受益（不做屏类型/卡牌特判）。
+- 其它 mod：不变（只用既有 Driver/引擎接口，不新增反射）。
+
+### 验证
+
+- 构建：BUILD OK 145 源文件、564 entries、jar 1,326,905 B；INSTALL OK sha256 FB8EAD62A0051EB40A174F2B2904B749818CD87340849B27BE627917726A9DC4（已确认安装包内 `sts1solver/Gameplay.class` 含新字符串 `pick nothing`）。
+- 实机由用户自测（m00732）：①计划妥当结束回合「不选」约 0.25s 后自动点确定并继续；②日志出现 `screen 1/1 answer=[] (pick nothing)`；③不再出现 `no-plan-answer: the plan has 0 answer(s)` 与 `结束回合里开了一块计划没有答案的选牌屏`；④带卡牌的选牌屏行为不变。
+
+### 关联
+
+- 后续｜B209 的两条「计划没有答案」判据（`answerNextScreen` 用完、`answerEndTurnScreens` 未知风险）现在按**屏数**读，空答案是合法答案而不是缺失答案；B190 的写入端语义（`screenKinds` 决定屏数）未变。
