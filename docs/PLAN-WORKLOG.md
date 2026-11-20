@@ -3068,4 +3068,6 @@ user m03920「显示引擎异常，为什么」（面板红字 `9x ArrayIndexOut
 | 代价/风险 | 单文件约 25 行；屏数 ≤ n 时行为不变；重复屏判据可能丢掉「合法连开两块相同屏」的那一步（只会少一条线，不会出错误计划） | ✅ 已写 PLAN-BUGS |
 | 构建/安装 | BUILD OK 145 源文件、564 entries、1,328,716 B；INSTALL OK sha256 F69978ECD4C34D91CB27ABB12DF884D9A4CF8053C4DBE86FEC704F2F88D6BC4E | ✅ |
 | 版本 | `resources/ModTheSpire.json` → 1.0.12；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.12 bullet（**工坊 config.json 未动，未上传**） | ✅ |
+| 发布 1.0.12（2026-11-20 16:36） | 工坊 config.json（GBK/936 无 BOM，4,786 B，备份 config.json.bak-20261120d）：description 版本行 1.0.9 → 1.0.12、changeNote 换 1.0.12 文案，visibility 保持 public；content jar 换成本次构建（SHA256 F69978EC…，与已装一致）。上传输出 Successfully updated workshop item! | ✅ |
+| GitHub | 提交 c0afcf7「B212: size the probe answer array by the number of screens…」7 文件 +370/−21，tools/push-github.ps1 → PUSH OK | ✅ |
 | 实机验证 | 用户自测：同一局面重算不再出现 AIOOBE 红字；若仍「未找到胜线」，日志里的 `step … could not be walked` / `the same … screen … came back` 两行可定位具体牌/屏 | ⏳ 待实机 |
