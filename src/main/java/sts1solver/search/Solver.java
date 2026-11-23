@@ -58,6 +58,8 @@ public final class Solver {
     private static final int MAX_PROMOTIONS = 6;
     /** P2-41: ceiling of the adaptive limit (each promotion replays a whole line, so not unbounded). */
     private static final int MAX_PROMOTIONS_CAP = 60;
+    /** m00420: "not computed yet" for the signed HP value of a result (see {@link #netValueOf}). */
+    static final int NO_NET = Integer.MIN_VALUE;
     /** P2-41: cost guess for the first promotion of a session, before anything was measured. */
     private static final long PROMOTE_COST_GUESS_MS = 150L;
     /** P2-41: weight of the newest measurement in the moving average. */
@@ -802,9 +804,9 @@ public final class Solver {
         // (net HP), through the same {@link #compareRoutes}; passing net as the deficit and zeroing
         // postHeal/potionHp keeps that method's order untouched instead of duplicating it here.
         return Solver.compareRoutes(result.win, result.escaped, result.deathSaves,
-                Solver.netOf(result), 0, 0, result.predictedTurns, result.layersRun,
+                Solver.netValueOf(result), 0, 0, result.predictedTurns, result.layersRun,
                 result2.win, result2.escaped, result2.deathSaves,
-                Solver.netOf(result2), 0, 0, result2.predictedTurns,
+                Solver.netValueOf(result2), 0, 0, result2.predictedTurns,
                 result2.layersRun) < 0;
     }
 
@@ -852,8 +854,10 @@ public final class Solver {
         if (deathSaves != deathSaves2) {
             return Integer.compare(deathSaves, deathSaves2);
         }
-        int deficit = Math.max(0, hpLoss - Math.max(0, postHeal)) + potionHp;
-        int deficit2 = Math.max(0, hpLoss2 - Math.max(0, postHeal2)) + potionHp2;
+        // m00420: signed. Floored here, a route that healed back above its opening HP tied with
+        // one that did not, and the defensive line lost every near-tie to the aggressive one.
+        int deficit = hpLoss - postHeal + potionHp;
+        int deficit2 = hpLoss2 - postHeal2 + potionHp2;
         if (deficit != deficit2) {
             return Integer.compare(deficit, deficit2);
         }
@@ -1963,6 +1967,7 @@ public final class Solver {
         Node node2 = node = new Node(world, new ArrayList<Action>(), n18, n18, 0, GameActionManager.turn, false, false, Solver.monsterCount(), 0, string);
         // B173: the root costs nothing by definition; every later node computes its own net.
         node2.netHpLoss = 0;
+        node2.netHpValue = 0;
         ArrayList<Node> arrayList2 = new ArrayList<Node>();
         arrayList2.add(node);
         HashSet<String> hashSet = new HashSet<String>();
@@ -2016,20 +2021,24 @@ public final class Solver {
                                 choice = choice2;
                                 arrayList = arrayList3;
                             }
-                            int n20 = Math.max(0, n10 - choice2.hp);
+                            // m00420: signed HP delta against the fight's opening HP (n10).
+                            int n20 = n10 - choice2.hp;
                             int n21 = Math.max(0, n9 - choice2.potionHp);
                             // P2-35: growth already realized by this line is paid for out of the HP
                             // this node lost, exactly like a potion is (STS2 adds it to the score).
                             GrowthBook.Facts now2 = new GrowthBook.Facts(choice2.maxHealth, choice2.gold,
                                     choice2.upgradedCards, choice2.ritualDamage, choice2.potionHp);
                             int growthHp = GrowthBook.credit(arrayList3, now2, startGrowth);
-                            int n20s = Math.max(0, n20 - growthHp);
+                            // m00420 (user m00420): signed. A line that healed above its opening HP must score as a
+                            // gain instead of clamping to a tie -- that clamp is what made Defend free to skip.
+                            int n20s = n20 - growthHp;
                             int saves2 = DeathSaves.used(fairies0, choice2.fairies, choice2.lizardTail);
                             int n22 = Solver.score(n20s, n21, choice2.win, choice2.dead, n5 + 1, choice2.mhp, choice2.block, choice2.alive, saves2, choice2.gold - startGold) + (choice2.win ? Solver.lootPoints(choice2.loot) : 0) + (choice2.win ? Solver.healPoints(choice2.postHeal) : 0) + (choice2.win ? GrowthCredit.valueOf(arrayList3) : 0);
                             Node node4 = new Node(choice2.child, arrayList3, n22, Solver.rankOf(n22, choice2.block, choice2.energy, choice2.powers), n20, GameActionManager.turn, choice2.win, choice2.dead, choice2.monsters, saves2, choice2.digest);
                             node4.postHeal = choice2.postHeal;
                             node4.loot = choice2.loot;
                             node4.netHpLoss = Solver.netHpLoss(n20, growthHp, choice2.postHeal, n21);
+                            node4.netHpValue = Solver.netHpValue(n20, growthHp, choice2.postHeal, n21);
                             // B173 keeps the ranking alone: score already puts 1 HP at 2000 points and
                             // the board terms (monster HP / alive / block) only break near ties, so a
                             // line that killed more never buys back the HP a worse one already lost.
@@ -2173,6 +2182,7 @@ public final class Solver {
                             // B173: the continuation's own post-fight heal is credited; its loot is not
                             // (user m21803: rewards never pay for lost HP).
                             node2.netHpLoss = Solver.netHpLoss(combinedHp, 0, sub.postHeal, 0);
+                            node2.netHpValue = Solver.netHpValue(combinedHp, 0, sub.postHeal, 0);
                             string2 = "win";
                             Log.info("extend: the deepest line was continued to a win (+"
                                     + sub.plan.size() + " actions)");
@@ -2258,7 +2268,7 @@ public final class Solver {
                     continue;
                 }
                 int combinedHp = entry.hpLoss + sub.hpLoss;
-                if (sub.win && (!node2.win || combinedHp < node2.hpLoss)) {
+                if (sub.win && (!node2.win || combinedHp < Math.max(0, node2.hpLoss))) {
                     ArrayList<Action> combined = new ArrayList<Action>(entry.path);
                     for (int s = 0; s < sub.plan.size(); ++s) {
                         combined.add(sub.plan.get(s).action);
@@ -2273,6 +2283,7 @@ public final class Solver {
                     node2.postHeal = sub.postHeal;
                             node2.loot = sub.loot;
                     node2.netHpLoss = Solver.netHpLoss(combinedHp, 0, sub.postHeal, 0);
+                    node2.netHpValue = Solver.netHpValue(combinedHp, 0, sub.postHeal, 0);
                     string2 = "win";
                     if (bestWinLayer < 0) {
                         bestWinLayer = entry.layer;
@@ -2293,7 +2304,8 @@ public final class Solver {
         }
         n5 = 0;
         object2 = node2.path;
-        n4 = node2.hpLoss;
+        // m00420: display value only (floored); the signed one travels as netHpValue.
+        n4 = Math.max(0, node2.hpLoss);
         // B63: the "time" / "layers" reason was overwriting "win" as soon as the budget ran out
         // during the refine phase (A0 keeps searching after the first win). The fallback below then
         // saw "no win" and replaced a zero-damage winning line with the deepest LOSING line, while
@@ -2344,6 +2356,7 @@ public final class Solver {
         // B173 (user m21300): the number the panel and the merge read. The deepest-line
         // replacement (n5 != 0) has no heal or loot to credit, so its net is its raw loss.
         result5.netHpLoss = n5 != 0 ? n4 : node2.netHpLoss;
+        result5.netHpValue = n5 != 0 ? n4 : node2.netHpValue;
         result5.planVerified = verified;
         result5.planFailedAt = failedAt;
         result5.planFailedOn = failedOn;
@@ -2881,7 +2894,7 @@ public final class Solver {
      */
     private static int score(int n, int n2, boolean bl, boolean bl2, int n3, int n4, int n5, int n6, int deathSaves, int goldDelta) {
         if (bl2) {
-            return -50000000 - n * 100;
+            return -50000000 - Math.max(0, n) * 100;
         }
         // One strategic HP deficit, then the board terms (JUDGMENT.md G1). n = HP lost,
         // n2 = HP value of the potions spent (PotionBook: 9 / 14 / 18 per tier), n3 = layer (turn),
@@ -2996,7 +3009,7 @@ public final class Solver {
      * it cannot be reintroduced by accident without changing this signature.
      */
     static int netHpLoss(int hpLoss, int growthHp, int postHeal, int potionHp) {
-        int net = Math.max(0, hpLoss) - Math.max(0, growthHp) - Math.max(0, postHeal);
+        int net = hpLoss - growthHp - postHeal;
         return Math.max(0, net) + Math.max(0, potionHp);
     }
 
@@ -3009,6 +3022,27 @@ public final class Solver {
             return result.netHpLoss;
         }
         return Solver.netHpLoss(result.hpLoss, 0, result.postHeal, result.potionHpSpent);
+    }
+
+    /**
+     * m00420 (user m00420): the signed cost of a finished line -- the one {@link #better} and
+     * {@link #compareRoutes} order by. HP gained (heal above the opening HP, growth credit) is
+     * negative here, so two lines that both end above their opening HP are no longer a tie.
+     */
+    static int netValueOf(Result result) {
+        if (result.netHpValue != NO_NET) {
+            return result.netHpValue;
+        }
+        return Solver.netHpValue(result.hpLoss, 0, result.postHeal, result.potionHpSpent);
+    }
+
+    /**
+     * m00420: signed HP cost of a line: positive = HP lost, negative = HP gained.
+     * growthHp is the HP value already credited by the growth book, postHeal the heal the line
+     * gets after the fight; potionHp is the HP value of the potions it drank.
+     */
+    static int netHpValue(int hpLoss, int growthHp, int postHeal, int potionHp) {
+        return hpLoss - growthHp - postHeal + potionHp;
     }
 
     /** B173: gate hook -- the ruler itself is package-private. */
@@ -3507,6 +3541,12 @@ public final class Solver {
          * it (gates, the deepen path): {@link Solver#netOf} falls back to the old formula then.
          */
         public int netHpLoss = -1;
+        /**
+         * m00420 (user m00420): the SIGNED counterpart of {@link #netHpLoss}. Negative means the
+         * line ended the fight with more HP than it opened with (heal / growth credit), which is a
+         * real gain the search must rank, not a zero. {@link #netHpLoss} stays floored for display.
+         */
+        public int netHpValue = NO_NET;
 
         /**
          * L1 (user m17363): the post-combat reward this winning line earns (gold, cards, relic,
@@ -3788,6 +3828,8 @@ public final class Solver {
          * subtracted, the potions it drinks are added back. -1 until {@code expandAndRecord} fills it.
          */
         int netHpLoss = -1;
+        /** m00420: signed twin of {@link #netHpLoss} -- the number every ordering reads. */
+        int netHpValue = NO_NET;
 
         Node(World world, List<Action> list, int n, int n2, int n3, int n4, boolean bl, boolean bl2, int n5, int n6, String string) {
             this.world = world;
@@ -4552,6 +4594,7 @@ public final class Solver {
             this.best = node = new Node(world, new ArrayList<Action>(), n5, n5, 0, GameActionManager.turn, false, false, Solver.monsterCount(), 0, this.startDigest);
             // B173: the root costs nothing by definition; every later node computes its own net.
             node.netHpLoss = 0;
+            node.netHpValue = 0;
             // B176: the root is captured from a finished board by definition.
             node.positionKey = Solver.positionKey(this.startDigest, true);
             this.frontier.add(node);
@@ -4613,7 +4656,7 @@ public final class Solver {
          * no line is held yet.
          */
         public int bestHpLoss() {
-            return this.best == null ? -1 : this.best.hpLoss;
+            return this.best == null ? -1 : Math.max(0, this.best.hpLoss);
         }
 
         /**
@@ -5015,13 +5058,13 @@ public final class Solver {
                     this.deepest = choice;
                     this.deepestPath = arrayList;
                 }
-                int n = Math.max(0, this.startHp - choice.hp);
+                int n = this.startHp - choice.hp;
                 int n2 = Math.max(0, this.startPotionHp - choice.potionHp);
                 // P2-35: same rule as the blocking portfolio -- realized growth pays for HP lost.
                 GrowthBook.Facts now = new GrowthBook.Facts(choice.maxHealth, choice.gold,
                         choice.upgradedCards, choice.ritualDamage, choice.potionHp);
                 int growthHp = GrowthBook.credit(arrayList, now, this.startGrowth);
-                int n2s = Math.max(0, n - growthHp);
+                int n2s = n - growthHp;
                 int saves = DeathSaves.used(this.startFairies, choice.fairies, choice.lizardTail);
                 // P7 (user m00001): inside a potion tier the price of a potion is NOT charged on the
                 // node -- charging it here is exactly the 18000-point cliff that kept the "drink the
@@ -5035,6 +5078,7 @@ public final class Solver {
                 node3.postHeal = choice.postHeal;
                 node3.loot = choice.loot;
                 node3.netHpLoss = Solver.netHpLoss(n, growthHp, choice.postHeal, n2);
+                node3.netHpValue = Solver.netHpValue(n, growthHp, choice.postHeal, n2);
                 // B173 (user m21300): the in-rung best is still picked by the raw score -- the net
                 // number is only what the panel prints and what the cross-rung merge compares. Trying
                 // to rank by it dropped the board terms and picked zero-damage zero-turn stubs.
@@ -5315,7 +5359,7 @@ public final class Solver {
             }
             boolean bl = false;
             List<Action> list = this.best.path;
-            int n = this.best.hpLoss;
+            int n = Math.max(0, this.best.hpLoss);
             if (!this.best.win && !"win".equals(this.reason) && this.deepestPath != null
                     && this.deepestPath.size() > this.best.path.size()) {
                 List<Step> list2;
@@ -5374,6 +5418,7 @@ public final class Solver {
             // B173 (user m21300): carry the shared ruler onto the finished answer. The deepest-line
             // replacement (bl) has no heal/loot to credit, so its net is its raw loss.
             this.result.netHpLoss = bl ? n : this.best.netHpLoss;
+            this.result.netHpValue = bl ? n : this.best.netHpValue;
             this.result.planVerified = verified;
             this.result.planFailedAt = failedAt;
             this.result.planFailedOn = failedOn;

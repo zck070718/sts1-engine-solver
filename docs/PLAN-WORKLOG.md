@@ -3150,3 +3150,27 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 验收 | 用户自测（不跑门禁，见 m00732/m00300）：从 t1 起跑（舍利子→打击→封印→握握手→结束回合）按计算，看计划是否出现「带封印、0 掉血」的线，以及日志 `A3 promote` 的 promoted 是否分布到多个开局 | ⏳ |
 | 发布（2026-11-23 23:15，user m01131） | 工坊暂存目录 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` 换成 1.0.15（1,335,183 B，sha256 `077BCB19…DE1B84`，与构建产物一致）；`config.json`（GBK/936 无 BOM，备份 `config.json.bak-20261123`）把 description 的「当前版本：1.0.12」改为 1.0.15，changeNote 换 1.0.15 文案（延迟收益牌被第一层剪掉、可复现扰动 + 分桶轮转回放、`search.lineNoise`/`search.deferredRotation` 可调）；`mod-uploader.jar upload` 输出 `Successfully updated workshop item!` | ✅ 3839053516 |
 | GitHub | commit `0deff25`（B215 …; release 1.0.15，7 files changed/266+），`tools/push-github.ps1` → `e721823..0deff25 master -> master` PUSH OK（未用代理） | ✅ |
+
+
+## B216 蕾忍打 Looter 第 2 回合不打防御：HP 计价被截断成 0（2026-11-24，user m00005；版本 1.0.16）
+
+用户问：solver.log 里蕾忍打 Looter 第 2 回合手上有 `Defend_Ninja`（1 费 5 格挡）、能量 e=1，出防御能少挨 5 点，为什么计划直接结束回合。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 决定 | 不改搜索宽度、不改 beam/噪声：**这是评分口径的错，不是搜索没算到**。打防御线与结束回合线在 HP 项上被判成同分，差 5 HP=10,000 分被 `Math.max(0,·)` 抹平 | ✅ |
+| 代码 | `Solver.java:2019` / `:2026` 去掉 `max(0,·)`（`n20 = n10 - choice2.hp`、`n20s = n20 - growthHp`）；新增 `netHpValue`/`netValueOf` 与 `Result/Node.netHpValue`（哨兵 `NO_NET`）；`QuickSession:5069-5081` 同口径；`better()`、`compareRoutes:859` 改走有符号净值；`netHpLoss` 留作面板显示口径（仍是 `max(0,·)`，不会显示负数） | ✅ |
+| 根因数字 | 开战 hp 35/63；暗龙夺魂手使最大生命 63→65，growthHp=2×3=6（`GrowthBook` FEED=30 tenths）。结束回合线 hp 37→29 ⇒ hpLoss=6 ⇒ 旧净值 `max(0,6−6)=0`；打防御线 hp 37→34 ⇒ hpLoss=1 ⇒ 旧净值 `max(0,1−6)=0`。同分后 `rankOf` 的 `energy*40`（留 1 能量 +40 vs 格挡 ×4=+20）与 `score` 的 board（层号、格挡都是减项）让结束回合两侧都赢 | ✅ |
+| 回滚 | 把 `:2019/:2026/:859` 三处 `max` 加回、`better()` 改回 `netOf` ⇒ 与 1.0.15 行为一致 | ✅ |
+| 代价 | 删 3 个 `max`、加 2 个小函数与 2 个 int 字段；每节点零额外对象/遍历 | ✅ |
+| 风险 | 净值可为负 ⇒ 拖回合刷血/刷成长在评分上是正收益；胜利 +10,000,000 仍压倒一切，但没有回血上限的硬判据；`compareRoutes` 去 max 后与 `score` 口径统一（负 deficit 会排前） | ✅ |
+| 对 mod 的影响 | 面板格式与掉血显示不变（仍显示真实变化）；自动出牌会开始主动留防御牌；搜索结果中「多留能量/多留格挡但同净血」的线不再自动占优；不动镜像/Driver/Digest，其它 mod 无影响 | ✅ |
+| 构建 | `tools/build.ps1` exit 0（JDK 21.0.11、`--release 8`、147 源文件、568 entries）→ `mod\sts1-engine-solver.jar` **1,335,437 B**，sha256 `4355BD345B694E681EB110162346121CABC8A55B574C752D48D1204708B9182E` | ✅ |
+| 安装 | `tools/install.ps1 -SkipBuild` INSTALL OK（sha256 一致，装到 `D:\Steam\...\mods`） | ✅ |
+| 版本 | `resources/ModTheSpire.json` → `1.0.16`；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.16 bullet | ✅ |
+| 发布 | 工坊暂存 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` 换 1.0.16（同 hash）；`config.json`（GBK/936 无 BOM，备份 `config.json.bak-20261124`，5000 B）description「当前版本」→ 1.0.16、changeNote 换 1.0.16 文案；`mod-uploader.jar upload` 输出 `Successfully updated workshop item!`（2026-11-24 01:04） | ✅ 3839053516 |
+| 上传踩坑 | Steam 未运行时 `Steam API failed to initialize correctly.`；无控制台时 uploader 用 `cmd /k` 重启自身、父进程立刻退出且无 stdout ⇒ 需 PowerShell 先 `AllocConsole()` 再 `Start-Process -RedirectStandardOutput -NoNewWindow` 才能拿到日志 | ✅ 已记入 PLAN-BUGS ## B216 |
+| GitHub | 见下条 shell 结果 | ⏳ |
+| 验收 | 用户自测（不跑门禁，m00732/m00300）：同局面按计算，t2 计划应出现「防御」；日志掉血应为真实净值 | ⏳ |
+
+文档：`docs/PLAN-BUGS.md` 末尾 `## B216` 全细节；`docs/PLAN.md` 板块表 B216 行（并顺带订正 B215 行「已构建 1.0.15（待安装实机）」→ 已发布、B211 行「已构建安装 1.0.11（待实机）」→ 后续版本已接续）。
