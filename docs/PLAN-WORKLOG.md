@@ -3101,6 +3101,6 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 验证（离线） | 自写 javassist harness `_tmp/deathquiet/DeathQuietCheck.java`：同一 replace 文本 instrument `AbstractPlayer.damage` 后统计 ⇒ `rewritten=1 quietCalls=1 newDeathScreen=0 ctorCalls=0`。 | ✅ |
 | 构建 | `tools/build.ps1` 被执行策略挡住（`PSSecurityException`）⇒ 手工等价：JDK21 `--release 8` 编译 147 源文件到 `build/runs/build-manual-20261123-093613/classes`（564 entries），`jar.exe --create` ⇒ `mod/sts1-engine-solver.jar` 1,345,230 B；jar 内确认含 `DeathQuiet.class`/`DeathQuiet$1.class`/`DeathQuiet$Site01.class`。 | ✅ 未跑门禁（用户偏好自测） |
 | 安装 | 用户放行提权后覆盖成功：`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` 1,345,230 B / 2026-11-23 17:37:27，sha256 `973681F822750D16A630EE74C430E012603FE98EDAC322243F9B99785AECD9D1`（与工作区 `mod\sts1-engine-solver.jar` 一致），jar 内含 `DeathQuiet.class` / `DeathQuiet$1.class` / `DeathQuiet$Site01.class`。 | ✅ 已安装 |
-| 版本 | `resources/ModTheSpire.json` 1.0.13（未升版）；创意工坊未动。 | — |
+| 版本/发布 | `resources/ModTheSpire.json` → **1.0.14**；重打包 jar 1,345,235 B、sha256 `C65DF6C5…94D`（复用 11-23 09:36 的编译产物，只换 resources 与版本戳）；游戏 `mods` 已覆盖；创意工坊 `3839053516` 上传成功（第一次 `SteamResult=Fail` 属 Steam 侧瞬时失败，重试即成功）；GitHub `master` 推到 `2b08b2b`。 | ✅ |
 | 文档 | PLAN-BUGS.md `## B214`、PLAN.md 状态表 B214 行、本表、SANDBOX-MECHANISMS.md、PLAN-ISOLATION.md。 | ✅ |
 | 实机验证 | 由用户自测：①求解会死人的战斗后 `Managing unlocks` 不增长；②`SlayTheSpire.log` 无 `screens.DeathScreen> PLAYTIME` 循环、`saves\<角色>.autosave` 不被删；③solver.log 出现 ≤3 行 `sandbox death: live DeathScreen skipped`；④面板/自动出牌不变。 | ⏳ 待实机 |

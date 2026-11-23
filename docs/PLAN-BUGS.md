@@ -5391,7 +5391,7 @@ src/main/java/sts1solver/drive/Driver.java：
 ### 验证
 
 - 离线字节码验证（不启动游戏）：`ClassPool(true)` 依次 append `desktop-1.0.jar`/`BaseMod.jar`/`StSLib.jar`/`ModTheSpire.jar` + 编译输出目录，取 `AbstractPlayer.damage(DamageInfo)`，用与 `DeathQuiet` 完全相同的 replace 文本 `instrument` 后遍历 `CodeAttribute`：**`rewritten=1 quietCalls=1 newDeathScreen=0 ctorCalls=0`**，`$_ = (DeathScreen) null` 被 javassist 接受、class 可写出。
-- 构建：BUILD OK 147 源文件、564 entries、jar 1,345,230 B（手工等价流程；`tools/build.ps1` 在本机被执行策略挡住，见下）；INSTALL OK（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，1,345,230 B / 2026-11-23 17:37:27，sha256 `973681F822750D16A630EE74C430E012603FE98EDAC322243F9B99785AECD9D1`，与工作区 `mod\sts1-engine-solver.jar` 哈希一致；jar 内确认 `DeathQuiet.class`/`DeathQuiet$1.class`/`DeathQuiet$Site01.class`）。。
+- 构建：BUILD OK 147 源文件、564 entries、jar 1,345,230 B（手工等价流程；`tools/build.ps1` 在本机被执行策略挡住，见下）；INSTALL OK（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，1,345,230 B / 2026-11-23 17:37:27，sha256 `973681F822750D16A630EE74C430E012603FE98EDAC322243F9B99785AECD9D1`，与工作区 `mod\sts1-engine-solver.jar` 哈希一致；jar 内确认 `DeathQuiet.class`/`DeathQuiet$1.class`/`DeathQuiet$Site01.class`）。发布：版本 **1.0.14**，重打包 jar 1,345,235 B / sha256 `C65DF6C519DEEAE2DA2CA172F1460EF81EA28A58F94EA36AD893375CA83AA94D`（复用 11-23 09:36 编译产物，只换 resources 与版本戳），已覆盖游戏 `mods`；创意工坊 3839053516 上传成功（首次 `SteamResult=Fail` 为 Steam 瞬时失败，重试成功）；GitHub `master` `2b08b2b`。。
 - 实机（由用户自测）：①求解一场会死人的战斗（如蕾忍打乐加维林），`mts_process_launch.log` 里 `Managing unlocks` 不再增长；②`SlayTheSpire.log` 不再出现 16:41 那种 `screens.DeathScreen> PLAYTIME` 循环，`saves\<角色>.autosave` 不再被删；③solver.log 出现 ≤3 行 `sandbox death: live DeathScreen skipped`；④面板结果与自动出牌与之前一致。
 
 ### 关联
