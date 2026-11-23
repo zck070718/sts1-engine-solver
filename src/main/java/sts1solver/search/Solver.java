@@ -140,6 +140,51 @@ public final class Solver {
         return deferredEnabled;
     }
 
+    /**
+     * B215 (user m00993): the deterministic birth noise of one line, in rank points.
+     *
+     * <p>Taken from the board digest, so it is a property of the STATE and not of the order the
+     * candidates were generated in: two paths that reach the same board draw the same value (which is
+     * what the dedupe table already assumes), and the plan cache stays keyed on the same digest.
+     * Magnitude comes from {@code search.lineNoise} (default 300, 0 disables B215's noise entirely).
+     */
+    static int lineNoise(String digest) {
+        int magnitude = Limits.lineNoise();
+        if (magnitude <= 0 || digest == null) {
+            return 0;
+        }
+        int h = digest.hashCode();
+        h ^= h >>> 16;
+        h *= 0x7feb352d;
+        h ^= h >>> 15;
+        h *= 0x846ca68b;
+        h ^= h >>> 16;
+        return Math.floorMod(h, 2 * magnitude + 1) - magnitude;
+    }
+
+    /**
+     * B215: the bucket a parked line is replayed in -- where it was parked and how it opened.
+     *
+     * <p>Two actions, not one: with one the seal line still shared its bucket with every other
+     * "sarira first" line and stayed at the bottom of that bucket. Two makes each opening its own
+     * bucket, so the round-robin in {@link #sortDeferred} guarantees it one replay before any opening
+     * gets a second.
+     */
+    private static String deferredBucket(Deferred d) {
+        StringBuilder sb = new StringBuilder(24);
+        sb.append(d.layer).append('|');
+        if (d.path != null) {
+            for (int i = 0; i < d.path.size() && i < 2; ++i) {
+                Action a = d.path.get(i);
+                if (i > 0) {
+                    sb.append('/');
+                }
+                sb.append(a == null || a.label == null ? "?" : a.label);
+            }
+        }
+        return sb.toString();
+    }
+
     /** P2-41: measured cost of ONE promotion (moving average), 0 before anything was measured. */
     public static double promotionCostMs() {
         return promoteCostMs;
@@ -2036,8 +2081,11 @@ public final class Solver {
 
                     @Override
                     public int compare(Node node, Node node2) {
-                        if (node.rank != node2.rank) {
-                            return node2.rank - node.rank;
+                        // B215: noised rank decides the cut; see Solver.lineNoise.
+                        int rankA = node.rank + node.noise;
+                        int rankB = node2.rank + node2.noise;
+                        if (rankA != rankB) {
+                            return rankB - rankA;
                         }
                         if (node.score != node2.score) {
                             return node2.score - node.score;
@@ -3722,6 +3770,12 @@ public final class Solver {
         final int monsters;
         final int deathSaves;
         final String digest;
+        /**
+         * B215 (user m00993): this line's birth noise, drawn once from {@link #digest}. Added to
+         * {@link #rank} by every ordering (beam cut, parked pool, replay) so the tie between lines
+         * whose real value has not landed yet is broken by something other than the digest string.
+         */
+        final int noise;
         /** B176: the canonical visited key (see {@link Solver#positionKey}); null means raw digest. */
         String positionKey;
         /** m22600: post-combat heal this node's board would get; see {@link Choice#postHeal}. */
@@ -3747,6 +3801,7 @@ public final class Solver {
             this.monsters = n5;
             this.deathSaves = n6;
             this.digest = string;
+            this.noise = Solver.lineNoise(string);
         }
     }
 
@@ -3758,6 +3813,8 @@ public final class Solver {
         final List<Action> path;
         final int score;
         final int rank;
+        /** B215: the line's birth noise, same value its Node drew from the same digest. */
+        final int noise;
         final int hpLoss;
         final int layer;
         final int deathSaves;
@@ -3769,6 +3826,7 @@ public final class Solver {
             this.path = path;
             this.score = score;
             this.rank = rank;
+            this.noise = Solver.lineNoise(digest);
             this.hpLoss = hpLoss;
             this.layer = layer;
             this.deathSaves = deathSaves;
@@ -3807,12 +3865,30 @@ public final class Solver {
         deferred.set(worst, new Deferred(node.path, node.score, node.rank, node.hpLoss, layer, node.deathSaves, node.digest, node.positionKey));
     }
 
+    /**
+     * B215 (user m00993): order the parking lot so the replay quota is spread over openings.
+     *
+     * <p>Before this, the pass walked the pool in plain rank order and stopped at the promotion
+     * limit, so the lines that were already best on the layer they were parked at took every slot:
+     * "kept=2000 promoted=240 duplicate=1388" -- the rest of the pool, including the seal line parked
+     * at layer 2 with a rank 240 points below the survivors, was never replayed in ANY pass.
+     *
+     * <p>Now the pool is grouped by {@link #deferredBucket} (parked layer + the first two actions) and
+     * the slots are handed out round-robin: one line per opening, then a second per opening, and so on.
+     * Inside a bucket the old order still holds (noised rank, then score, then digest), so a bucket
+     * with many lines still offers its best first. The pool size, the admission rule and the quota are
+     * unchanged -- this only changes WHICH parked line gets the slot.
+     *
+     * <p>{@code search.deferredRotation=off} restores the pure rank scan.
+     */
     private static void sortDeferred(List<Deferred> deferred) {
         Collections.sort(deferred, new Comparator<Deferred>() {
             @Override
             public int compare(Deferred a, Deferred b) {
-                if (a.rank != b.rank) {
-                    return b.rank - a.rank;
+                int rankA = a.rank + a.noise;
+                int rankB = b.rank + b.noise;
+                if (rankA != rankB) {
+                    return rankB - rankA;
                 }
                 if (a.score != b.score) {
                     return b.score - a.score;
@@ -3820,6 +3896,40 @@ public final class Solver {
                 return a.digest.compareTo(b.digest);
             }
         });
+        if (!Limits.deferredRotation() || deferred.size() < 2) {
+            return;
+        }
+        java.util.LinkedHashMap<String, java.util.List<Deferred>> buckets =
+                new java.util.LinkedHashMap<String, java.util.List<Deferred>>();
+        for (int i = 0; i < deferred.size(); ++i) {
+            Deferred d = deferred.get(i);
+            String key = Solver.deferredBucket(d);
+            java.util.List<Deferred> bucket = buckets.get(key);
+            if (bucket == null) {
+                bucket = new java.util.ArrayList<Deferred>();
+                buckets.put(key, bucket);
+            }
+            bucket.add(d);
+        }
+        if (buckets.size() < 2) {
+            return;
+        }
+        java.util.ArrayList<Deferred> ordered = new java.util.ArrayList<Deferred>(deferred.size());
+        for (int round = 0; ; ++round) {
+            boolean any = false;
+            for (java.util.Iterator<java.util.List<Deferred>> it = buckets.values().iterator(); it.hasNext(); ) {
+                java.util.List<Deferred> bucket = it.next();
+                if (round < bucket.size()) {
+                    ordered.add(bucket.get(round));
+                    any = true;
+                }
+            }
+            if (!any) {
+                break;
+            }
+        }
+        deferred.clear();
+        deferred.addAll(ordered);
     }
 
     private static int promotionDepth() {
@@ -4759,8 +4869,11 @@ public final class Solver {
 
                     @Override
                     public int compare(Node node, Node node2) {
-                        if (node.rank != node2.rank) {
-                            return node2.rank - node.rank;
+                        // B215: noised rank decides the cut; see Solver.lineNoise.
+                        int rankA = node.rank + node.noise;
+                        int rankB = node2.rank + node2.noise;
+                        if (rankA != rankB) {
+                            return rankB - rankA;
                         }
                         if (node.score != node2.score) {
                             return node2.score - node.score;

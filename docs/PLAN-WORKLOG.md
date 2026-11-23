@@ -3104,3 +3104,47 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 版本/发布 | `resources/ModTheSpire.json` → **1.0.14**；重打包 jar 1,345,235 B、sha256 `C65DF6C5…94D`（复用 11-23 09:36 的编译产物，只换 resources 与版本戳）；游戏 `mods` 已覆盖；创意工坊 `3839053516` 上传成功（第一次 `SteamResult=Fail` 属 Steam 侧瞬时失败，重试即成功）；GitHub `master` 推到 `2b08b2b`。 | ✅ |
 | 文档 | PLAN-BUGS.md `## B214`、PLAN.md 状态表 B214 行、本表、SANDBOX-MECHANISMS.md、PLAN-ISOLATION.md。 | ✅ |
 | 实机验证 | 由用户自测：①求解会死人的战斗后 `Managing unlocks` 不增长；②`SlayTheSpire.log` 无 `screens.DeathScreen> PLAYTIME` 循环、`saves\<角色>.autosave` 不被删；③solver.log 出现 ≤3 行 `sandbox death: live DeathScreen skipped`；④面板/自动出牌不变。 | ⏳ 待实机 |
+
+## B215 诊断：0 掉血封印线为何没被算出（2026-11-23，未改代码）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 结论 | 不是封印/蕾克拉没模拟，是 **beam 在每个动作层按「当前盘面」裁剪，封印的收益（跳过下一次敌方回合）要等 3 层之后才出现在任何字段里**；t1 内所有线掉血均为 0，排序只看怪血/玩家格挡，封印（0 伤害 + 给怪 50 格挡 + 2 费）必然垫底 | ✅ |
+| 量化 | 第 2 动作层实际分布 −1100（打击+打击）… −1340（舍利子+封印），**整层跨度 240 分 ≈ 0.12 HP**；封印要省的 8~13 点伤害 = 16,000~26,000 分 | ✅ |
+| 代码位置 | Solver.java:2803 rankOf、:2834 score、:4757–4794 beam 截断、:4711/:4716/:4724 三个终止口；QuickSession NARROW_BEAM=10，阶梯 [10,28,64,128]，实测第 2 档到 layer=16 才触发 | ✅ |
+| 取证 | solver.log 19:59:24–26 沙盒 11 行 SealPower/Stunned（t2 起跑）；19:59 tier0 4178 节点枯竭 hp=1；20:01 tier0 28066 节点 hp=3、tier1（许 1 瓶药）hp=0 net=9；三档 proven=false | ✅ |
+| 未做 | 逐层 dump beam 内容核实「第几层被剪」；把实机 14 步在同一 t1 起点回放看 rng 是否 same（判 0 掉血线在沙盒 RNG 世界是否存在） | ⏳ |
+| 方案 | A 前 N 层不裁剪（推荐，+5~15% 时间）；B 只在一回合结束时裁剪（更彻底，frontier 更大）；C 给 score 加「敌人被控 × 意图伤害」项（根治，需读怪物 power，影响全局排序） | ⏳ 待用户选 |
+| 文档 | PLAN-BUGS.md ## B215、PLAN.md 状态表 B215 行、本表 | ✅ |
+
+### B215 追加：方案 D（用户 m00967 建议：给世界线/裁剪加随机）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 用户建议 | 每条线加一个不大的随机值，或让每次裁剪随机，以提高不同世界线被展开的机会 | ✅ 已记录 |
+| 落地点 | Solver.java:4758 beam 排序的 Comparator：`rank' = rank + jitter(hash(根digest + 动作路径))`，只在超过 beam 时生效，用来打破 ≤240 分的平局 | ⏳ |
+| 关键约束 | ①每条线**出生抽一次、随线不变**（每层重抽则 12~15 层连续过关概率 ~1e-7）；②噪声量级 200~400 分（与一层跨度同阶；到 1 HP=2000 就变成随机抽样）；③种子必须由根 digest+路径决定，保证同局面同计划、plan cache/自动出牌不受影响；④B177 原地加宽不重跑旧层，所以第 1 档就定型，要给被剪线第二次机会只能靠 press 序号换种子或给 parked 线小幅提权 | ✅ 已核实代码 |
+| 结论 | 单用 D 每次约 1/4 概率救回封印线但不保证；**A（前 8 层不裁剪）打底 + D 补中后期平局**最稳 | 📝 |
+| 文档 | PLAN-BUGS.md ## B215 追加段、本表 | ✅ |
+
+### B215 追加二：A 撤下，随机化路线 E / G / H（user m00977）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 用户决定 | m00977「a不要做」⇒ 方案 A（前 8 层不裁剪）从候选里撤下 | ✅ |
+| 新候选 | E deferred 分层抽样回放（推荐：封印线就在池子里永远排不到，Solver.java:5026）；D 出生噪声；G press 种子/多次 pass；H 分桶保底（层宽不动）；J 同分 hash 兜底 | ✅ 已写 PLAN-BUGS |
+| 排除 | F（ε-greedy 展开顺序）实测无效：面板搜索 nodeBudget=0 ⇒ layerAllowance=MAX，每层全部节点都会展开，顺序不改变存活者，只有 :4772 的 beam 截断决定生死 | ✅ 已核实 |
+| 推荐 | E + D，G 作可选手动开关 | ⏳ 待用户确认 |
+
+## B215 实施：E（停放池分桶轮转）+ D（出生噪声），版本 1.0.15（2026-11-23，user m00993「改」）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 决定 | 用户否决 A（m00977），要求「改」⇒ 按 E + D 落地；G/H/J 不做 | ✅ |
+| 代码 | `Solver.lineNoise`（digest→±search.lineNoise，默认 300）、`Solver.deferredBucket`（停放层+前两个动作）、`Node.noise`、`Deferred.noise`、两处 beam Comparator 改 `rank+noise`、`sortDeferred` 改「先 noised rank 排序 → 分桶 → 轮转」；`Limits.lineNoise()` / `Limits.deferredRotation()` | ✅ |
+| 回滚 | `search.lineNoise=0`、`search.deferredRotation=off` ⇒ 回到 1.0.14 行为 | ✅ |
+| 构建 | `tools/build.ps1` BUILD OK（JDK 21.0.11、`--release 8`、147 源文件、568 entries）→ `mod\sts1-engine-solver.jar` **1,335,183 B**，sha256 `077BCB19130990F0F3F6E0FA841ED22183650570485BBCE1458A6E6BE0DE1B84` | ✅ |
+| 安装（更正） | 三次「locked by a running game」是**误判**：实际是 DSH 文件沙箱拒绝写工作区外的 `D:\Steam\...\mods`（读 OK、写入 Access denied，系统里没有任何 java 进程），脚本把 `UnauthorizedAccessException` 一律当成占用。改用 full-access 单次批准后 `INSTALL OK`，sha256 与构建产物一致 `077BCB19…DE1B84`。**待办**：install.ps1 的锁判据应区分 `UnauthorizedAccessException` 与共享冲突 | ✅ 已安装 |
+| 安装（旧记录） | `tools/install.ps1 -SkipBuild` 被拒：`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` 被运行中的游戏占用（未替换任何文件） | ⏳ 等用户关游戏后安装 |
+| 版本 | `resources/ModTheSpire.json` → 1.0.15；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.15 bullet（**工坊 config.json 未动，未上传**） | ✅ |
+| 验收 | 用户自测（不跑门禁，见 m00732/m00300）：从 t1 起跑（舍利子→打击→封印→握握手→结束回合）按计算，看计划是否出现「带封印、0 掉血」的线，以及日志 `A3 promote` 的 promoted 是否分布到多个开局 | ⏳ |

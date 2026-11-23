@@ -143,6 +143,44 @@ public final class Limits {
         return pick(tier("layers"), LAYERS_LOW, LAYERS_HIGH, LAYERS_UNLIMITED);
     }
 
+    /**
+     * B215 (user m00993): per-line birth noise, in rank points.
+     *
+     * <p>Every line draws ONE deterministic value from its own board digest the first time it is
+     * built, and keeps it for the rest of the search. The beam sorts on rank, and inside the first
+     * turn the whole spread between "two strikes" and "sarira + seal" is about 240 points, so a
+     * 300-point noise is what lets a line whose value only lands two turns later survive the cut
+     * instead of being parked on its first board. Drawing again per layer was rejected: 12-15
+     * consecutive cuts at a quarter each leave roughly 1e-7.
+     *
+     * <pre>
+     *   search.lineNoise=300   # default
+     *   search.lineNoise=0     # rollback: ordering is the old rank/score/digest order again
+     * </pre>
+     */
+    public static int lineNoise() {
+        String v = read("search.lineNoise", "300").trim();
+        int n;
+        try {
+            n = Integer.parseInt(v);
+        } catch (Throwable t) {
+            return 300;
+        }
+        return Math.max(0, Math.min(5000, n));
+    }
+
+    /**
+     * B215 (user m00993): whether the parking lot hands its replay slots out bucket by bucket.
+     *
+     * <p>Plain rank order spends all of them on the lines that were already best on the layer they
+     * were parked at, so a line cut at layer 2 -- the seal line: 2 energy, no damage yet -- never got
+     * its turn. The log said "kept=2000 promoted=240 duplicate=1388": every slot went to a line that
+     * had already been tried. {@code search.deferredRotation=off} restores the pure-rank scan.
+     */
+    public static boolean deferredRotation() {
+        return yes("search.deferredRotation", true);
+    }
+
     /** Branch cap for one open screen, from the kind the engine reports. */
     public static int choiceBranches(sts1solver.drive.Driver.SelectionKind kind, int floor) {
         int cap;
