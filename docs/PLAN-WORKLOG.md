@@ -3170,7 +3170,7 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 版本 | `resources/ModTheSpire.json` → `1.0.16`；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.16 bullet | ✅ |
 | 发布 | 工坊暂存 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` 换 1.0.16（同 hash）；`config.json`（GBK/936 无 BOM，备份 `config.json.bak-20261124`，5000 B）description「当前版本」→ 1.0.16、changeNote 换 1.0.16 文案；`mod-uploader.jar upload` 输出 `Successfully updated workshop item!`（2026-11-24 01:04） | ✅ 3839053516 |
 | 上传踩坑 | Steam 未运行时 `Steam API failed to initialize correctly.`；无控制台时 uploader 用 `cmd /k` 重启自身、父进程立刻退出且无 stdout ⇒ 需 PowerShell 先 `AllocConsole()` 再 `Start-Process -RedirectStandardOutput -NoNewWindow` 才能拿到日志 | ✅ 已记入 PLAN-BUGS ## B216 |
-| GitHub | 见下条 shell 结果 | ⏳ |
+| GitHub | commit `4f41455`（B216: score net HP signed …; release 1.0.16，6 files changed/107+/18−），`tools/push-github.ps1` → `PUSH OK`，`origin/master` = 4f41455（未用代理） | ✅ |
 | 验收 | 用户自测（不跑门禁，m00732/m00300）：同局面按计算，t2 计划应出现「防御」；日志掉血应为真实净值 | ⏳ |
 
 文档：`docs/PLAN-BUGS.md` 末尾 `## B216` 全细节；`docs/PLAN.md` 板块表 B216 行（并顺带订正 B215 行「已构建 1.0.15（待安装实机）」→ 已发布、B211 行「已构建安装 1.0.11（待实机）」→ 后续版本已接续）。
