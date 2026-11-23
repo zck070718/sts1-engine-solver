@@ -3146,5 +3146,7 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 构建 | `tools/build.ps1` BUILD OK（JDK 21.0.11、`--release 8`、147 源文件、568 entries）→ `mod\sts1-engine-solver.jar` **1,335,183 B**，sha256 `077BCB19130990F0F3F6E0FA841ED22183650570485BBCE1458A6E6BE0DE1B84` | ✅ |
 | 安装（更正） | 三次「locked by a running game」是**误判**：实际是 DSH 文件沙箱拒绝写工作区外的 `D:\Steam\...\mods`（读 OK、写入 Access denied，系统里没有任何 java 进程），脚本把 `UnauthorizedAccessException` 一律当成占用。改用 full-access 单次批准后 `INSTALL OK`，sha256 与构建产物一致 `077BCB19…DE1B84`。**待办**：install.ps1 的锁判据应区分 `UnauthorizedAccessException` 与共享冲突 | ✅ 已安装 |
 | 安装（旧记录） | `tools/install.ps1 -SkipBuild` 被拒：`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` 被运行中的游戏占用（未替换任何文件） | ⏳ 等用户关游戏后安装 |
-| 版本 | `resources/ModTheSpire.json` → 1.0.15；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.15 bullet（**工坊 config.json 未动，未上传**） | ✅ |
+| 版本 | `resources/ModTheSpire.json` → 1.0.15；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.15 bullet（工坊 config.json 已在 1.0.15 发布时同步） | ✅ |
 | 验收 | 用户自测（不跑门禁，见 m00732/m00300）：从 t1 起跑（舍利子→打击→封印→握握手→结束回合）按计算，看计划是否出现「带封印、0 掉血」的线，以及日志 `A3 promote` 的 promoted 是否分布到多个开局 | ⏳ |
+| 发布（2026-11-23 23:15，user m01131） | 工坊暂存目录 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` 换成 1.0.15（1,335,183 B，sha256 `077BCB19…DE1B84`，与构建产物一致）；`config.json`（GBK/936 无 BOM，备份 `config.json.bak-20261123`）把 description 的「当前版本：1.0.12」改为 1.0.15，changeNote 换 1.0.15 文案（延迟收益牌被第一层剪掉、可复现扰动 + 分桶轮转回放、`search.lineNoise`/`search.deferredRotation` 可调）；`mod-uploader.jar upload` 输出 `Successfully updated workshop item!` | ✅ 3839053516 |
+| GitHub | commit `0deff25`（B215 …; release 1.0.15，7 files changed/266+），`tools/push-github.ps1` → `e721823..0deff25 master -> master` PUSH OK（未用代理） | ✅ |
