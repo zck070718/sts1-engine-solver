@@ -5334,6 +5334,72 @@ src/main/java/sts1solver/drive/Driver.java：
 - 构建/安装：BUILD OK 145 源文件、564 entries、1,328,362 B；INSTALL OK sha256 79FFC6C3A32B38197D961D5849B7010C09B9816247BF9E8A6573C7564BD21336（版本 1.0.11）。
 - 验证：由用户自测——战斗结束后界面不再每 0.25 秒闪一次；日志里 `fight state off` 之后不应再出现同一房间的 `fight state on`（除非真的重新开打）。
 
+## B214 沙盒里每次模拟死亡都真造一遍死亡界面，把解锁/成就/统计/删档/Prefs.flush/音乐/黑屏整套跑穿（user m00005 / m00431 / m00504，2026-11-23）
+
+### 现象
+
+- user m00005：「查看最新日志，分析内存占用过大的原因」——任务管理器里 java.exe 九十几 %，出现在游戏最后卡住那一刻。本次战斗：蕾忍（Ninja_CLASS）打乐加维林（Act1 floor 7 精英）。
+- 报告 `reports\report-20261123-164157.zip`：info.txt `heap: 1352 MB of 7106 MB`；solver.log 收尾 `slow frame 65ms … gc=460/13103ms heap=952/7106MB`。
+- 15:41 挂起 dump（`hang-20261123-154143.txt`）：帧循环 4179ms 未返回，判定 `not a single loop of ours`；同刻 9 个不同栈顶里混着 `Ironclad.newInstance` ← `CharacterManager.recreateCharacter`、`ImageMaster.loadImage` ← `feminization.patches.charSelect.IroncladChangePatch`、`BaseMod.generateCharacterOptions` —— 全是别的 mod 的死亡/选人副作用。
+- 决定性证据在游戏侧日志：
+  - `D:\Steam\steamapps\common\SlayTheSpire\sendToDevs\logs\SlayTheSpire.log` 16:41:02–16:41:17（15 秒）以 4–13ms 为周期反复出现同一条链：`publish on card use: …` → `publish on post power apply` → `powers modified` → `publishPreMonsterTurn` → `publish on Player Damaged` → `screens.DeathScreen> PLAYTIME: 879 / WIN STREAK 0 / No Neow for you` → `basemod.BaseMod> Class has no more unlocks.` → `helpers.AsyncSaver> Enqueue: file=preferences\STSPlayer` → `publishPostDeath` → `helpers.File> Successfully saved preferences\STSPlayer`；`Class has no more unlocks.` 全文件 550 次，全在这 15 秒里。
+  - `mts_process_launch.log` 的裸行 `Managing unlocks` 共 **95,799** 次；按分钟极不均匀：16:22 20,536、16:27 20,467、16:41:02–16:41:17 **41,741**（≈2,780 次/秒），其余分钟 <1,500 ⇒ 与搜索强度同步，不是每帧行为。
+  - 16:41:41 `looking for file: saves\Ninja_CLASS.autosave`：真实存档在死亡链里被删。
+  - 日志末 `AL lib: (EE) alc_cleanup: 1 device not closed`（音频设备没正常关）。
+- 全文件计数：`OutOfMemory` 0、`hs_err` 无新文件 ⇒ 不是 Java 堆 OOM，是"每秒上千次重结算"的分配风暴 + 整机工作集。
+
+### 根因
+
+1. **`Managing unlocks` 每行 = 一次 GameOverScreen 构造**。它不在任何 mods/*.jar，而在 `D:\Steam\steamapps\workshop\content\646570\1605833019\BaseMod.jar` 的 `basemod/patches/com/megacrit/cardcrawl/screens/DeathScreen/ForceUnlock.class`；该类的 `@SpirePatch` 目标实为 `com/megacrit/cardcrawl/screens/GameOverScreen` 的 `calculateUnlockProgress`（`Postfix(GameOverScreen, ReturnToMenuButton)`，引用 `DevConsole#forceUnlocks`、`UnlockTracker#getUnlockLevel/getUnlockBundle`、`ReflectionHacks`）。包名叫 DeathScreen 只是 BaseMod 的目录习惯。
+2. **一次 DeathScreen 构造 = 一整条真实结算副作用链**。`com/megacrit/cardcrawl/screens/DeathScreen.<init>(MonsterGroup)` 的字节码顺序（`desktop-1.0.jar`，自写常量池解析器 dump）：第一条外部调用就是 `new GameOverScreen()` + `<init>()V`；随后 `AbstractRoom.clearEvent`、`DeathScreen.resetScoreChecks`、`OverlayMenu.showBlackScreen(F)`、`RestRoom.cutFireSound`、`new ReturnToMenuButton` + `appear`、`DynamicBanner.appear`、`Prefs.putInteger`、`MusicMaster.dispose`、`SoundMaster.play`、`MusicMaster.playTempBgmInstantly`、`UnlockTracker.unlockAchievement`、`StatsScreen.incrementDeath/incrementVictory/incrementPlayTime/updateFurthestAscent/…`、**`SaveHelper.shouldDeleteSave() → SaveAndContinue.deleteSave(AbstractPlayer)`（删真实存档）**、`DeathScreen.calculateUnlockProgress`、`uploadToSteamLeaderboards`、`createGameOverStats`、**`Prefs.flush()`（同步写盘）**。
+3. **沙盒每打死一次玩家，这条链就完整跑一遍**。`com/megacrit/cardcrawl/characters/AbstractPlayer.damage(DamageInfo)` 偏移 1107–1117：`new DeathScreen` / dup / `getMonsters()` / `<init>(MonsterGroup)` / `putstatic AbstractDungeon.deathScreen`；构造出的对象**只被 putstatic，从未解引用**。而 `mirror/Statics.java:368-374` 只在卸窗口时把 `AbstractDungeon.deathScreen` 这个**字段引用**还原——它挡的是"F8 后突然出现死亡界面"，挡不住构造函数已经跑完的解锁/成就/统计/删档/写盘/音乐/黑屏。
+4. **放大器是无上限搜索**：`docs/PLAN-BUGS.md:4180` 记录的 seen 无上限（没有内存兜底）、128 个完全克隆的 World、`deepSeconds=0 / unlimitedBudget=1`，导致单回合跑 2 小时 4 分、48.9 万节点（15:41 那份 `QUICK nodes=62548 totalNodes=489326 7446167ms`）。致死分支被反复展开 ⇒ 9.5 万次重结算 ⇒ GC 460 次/13.1 秒、其它 mod 的死亡钩子（解锁刷新、角色选择动画重建 Ironclad、`ImageMaster.loadImage`）被一起拖着跑。
+5. **结论更正（推翻上一轮的"贴图/音频未释放"）**：`mirror/ExternalMute.java:394-469` 的 `MutedMusic` 已把 `playTempBgmInstantly`/`dispose`/`changeBGM` 全改 no-op，`DeathScreen`/`GameOverScreen.<init>` 字节码里没有任何 `ImageMaster.loadImage` 调用，日志里 `sandbox art:` 0 行 ⇒ 死亡链本身不新建贴图、不放音频。真因是**"战斗无关的死亡结算链"在沙盒里被反复完整执行**，不是资源没释放。
+
+### 修法
+
+1. 新增 `src/main/java/sts1solver/mirror/DeathQuiet.java`（与 `PresentationQuiet` 同构的字节码改写设施）：
+   - `@SpirePatch(clz = AbstractPlayer.class, method = "damage", paramtypez = { DamageInfo.class })` + `@SpireInstrumentPatch`；
+   - `ExprEditor.edit(NewExpr)`，只匹配 `com.megacrit.cardcrawl.screens.DeathScreen`，把调用点替换成
+     `if (DeathQuiet.quiet()) { DeathQuiet.noteSuppressed(); $_ = (DeathScreen) null; } else { $_ = $proceed($$); }`；
+   - `quiet()` = `World.anyInstalled()`（只在沙盒窗口内为真，实机路径零变化）；
+   - `EXPECTED_SITES = 1`，改写计数写 `System property "sts1solver.deathQuiet.patchedSites"`（跨类副本共享，同 PresentationQuiet 的教训）；前 3 次记一行 `Log.info("sandbox death: live DeathScreen skipped (...)")`。
+2. 判定路径不动：死亡结论仍由 `drive/Driver.java:1560-1562` 的 `deadFrom(isDead, currentHealth)` 给出（注释 B73 已说明 `deathScreen` 由游戏赋一次值、永不为 null，只能 hide/reopen，不能用来判死）；沙盒内 `AbstractDungeon.deathScreen` 恒为 null，`probe/Probe.java:352` 的"模拟后不应留下 deathScreen"断言照常成立。
+3. 不碰 `damage` 的 `isDead/currentHealth` 写入，所以"同归于尽/死后反伤/毒杀"的判定语义与原版一致。
+
+### 代价
+
+- 代码：新增 1 个类约 150 行（含 `Site01`、`$1` 两个内部类），无新增配置项、无存档格式变化。
+- 运行时：每窗口一次静态读 `World.anyInstalled()`（已被大量调用点使用），日志最多 3 行；改写只在类加载时执行一次。
+- 收益：每个沙盒窗口内每次模拟致死省掉一整条 GameOverScreen/解锁/成就/统计/删档/同步写盘/音乐/黑屏链 ⇒ 分配速率与 GC 次数下降，长时间搜索的峰值应明显低于 3.8GB。
+
+### 风险
+
+- **沙盒内 `AbstractDungeon.deathScreen` 恒为 null**：原版 `TopPanel`/`ConfirmPopup` 等"只在死亡界面存在时才走"的代码在沙盒里不再触发。当前求解逻辑不依赖它；万一以后有人加依赖，需要重新评估。
+- **其它 mod 的死亡后钩子（`publishPostDeath` 等）在沙盒内不再触发**：若某个 mod 借死亡钩子改战斗结果（死后遗物/诅咒结算），沙盒会少算。已核对本次 19 个 mod 无此类钩子；以后装新 mod 需复核。
+- 回滚：删除 `DeathQuiet.java` 即可（改写站点随之消失，自动回到原版路径），不需回退其它文件。
+- 边界：本修法只掐死"死亡界面构造"，不改伤害/血量/判死；如果内存仍高，剩下的量级来自 `docs/PLAN-BUGS.md:4180` 的无上限 seen + 128 克隆 World，那是另一个问题。
+
+### 对 mod 的实际影响
+
+- 面板：不变（无新增提示）；日志最多多 3 行 `sandbox death: live DeathScreen skipped`。
+- 自动出牌/节奏：不变。
+- 搜索结果：模拟致死的分支少了一堆副作用，展开更快；胜负与血量判定不变。
+- 统计/存档：模拟死亡不再走 `StatsScreen.incrementDeath`、不再 `Prefs.flush`、不再删真实 `.autosave`（与 B213 的 CharStat 守卫互补）。
+- 兼容性：只改沙盒窗口内的一个调用点；实机与其它 mod 的补丁顺序不受影响。
+
+### 验证
+
+- 离线字节码验证（不启动游戏）：`ClassPool(true)` 依次 append `desktop-1.0.jar`/`BaseMod.jar`/`StSLib.jar`/`ModTheSpire.jar` + 编译输出目录，取 `AbstractPlayer.damage(DamageInfo)`，用与 `DeathQuiet` 完全相同的 replace 文本 `instrument` 后遍历 `CodeAttribute`：**`rewritten=1 quietCalls=1 newDeathScreen=0 ctorCalls=0`**，`$_ = (DeathScreen) null` 被 javassist 接受、class 可写出。
+- 构建：BUILD OK 147 源文件、564 entries、jar 1,345,230 B（手工等价流程；`tools/build.ps1` 在本机被执行策略挡住，见下）；INSTALL OK（`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar`，1,345,230 B / 2026-11-23 17:37:27，sha256 `973681F822750D16A630EE74C430E012603FE98EDAC322243F9B99785AECD9D1`，与工作区 `mod\sts1-engine-solver.jar` 哈希一致；jar 内确认 `DeathQuiet.class`/`DeathQuiet$1.class`/`DeathQuiet$Site01.class`）。。
+- 实机（由用户自测）：①求解一场会死人的战斗（如蕾忍打乐加维林），`mts_process_launch.log` 里 `Managing unlocks` 不再增长；②`SlayTheSpire.log` 不再出现 16:41 那种 `screens.DeathScreen> PLAYTIME` 循环，`saves\<角色>.autosave` 不再被删；③solver.log 出现 ≤3 行 `sandbox death: live DeathScreen skipped`；④面板结果与自动出牌与之前一致。
+
+### 关联
+
+- **B73**（deathScreen 由游戏赋一次值、永不为 null，只能 hide/reopen）：本修法让沙盒里根本不再产生它，hide/reopen 的老路只在实机成立。
+- **B213**（CharStat 内存字段被写脏）：B213 防的是"字段变脏"，B214 防的是"整条结算链被执行"，两者互补；B214 生效后 `CharStat.incrementDeath` 在沙盒里也不会再被调到。
+- **`docs/PLAN-BUGS.md:4180`**（末档无上限、seen 无上限、长时间搜索内存上升）：B214 是那次"单回合 2 小时"里被放大的分配源，但"搜索本身没有内存兜底"这一事实不变。
+
 ## B213 打完战斗统计里的「场数 / 游戏时间」自己会涨（user m00005 / m00344，2026-11-20）
 
 ### 现象

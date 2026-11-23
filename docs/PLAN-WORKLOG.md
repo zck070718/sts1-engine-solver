@@ -3086,3 +3086,21 @@ user m00005「查看sts1-engine-solver打完战斗统计角色场数和游戏时
 | 版本 | `resources/ModTheSpire.json` → 1.0.13；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.13 bullet（**工坊 `config.json` 未动，未上传**） | ✅ |
 | 文档 | PLAN-BUGS.md ## B213、PLAN.md 状态表 B213 行、本表 | ✅ |
 | 实机验证 | 由用户自测：①求解后统计页「场数/时间」不动；②正常结算一局后 `STSData<角色>` 只涨真实那一局；③若出现 `career record guard (B213): the window CHANGED` 把该行发出 | ⏳ 待实机 |
+
+## B214 沙盒死亡静音（DeathQuiet）：不再真造死亡界面（✅ 已安装，待实机）
+
+user m00005「查看最新日志，分析内存占用过大的原因」→ m00431「有没有更好的办法让沙盒不出现这个问题」→ m00504「只做 A」。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 取证 | `mts_process_launch.log` 的 `Managing unlocks` 95,799 行（16:41:02–16:41:17 十五秒 41,741 行 ≈2,780/s）；该行来自 `BaseMod.jar` 的 `basemod/patches/.../DeathScreen/ForceUnlock.class`，其 `@SpirePatch` 目标实为 `GameOverScreen.calculateUnlockProgress` ⇒ 1 行 = 1 次 GameOverScreen 构造。`SlayTheSpire.log` 同段每 4–13ms：`screens.DeathScreen> PLAYTIME` → `Class has no more unlocks.` → `Enqueue: preferences\STSPlayer` → `Successfully saved preferences\STSPlayer`；16:41:41 `saves\Ninja_CLASS.autosave` 被删。报告 heap 1352/7106MB，`gc=460/13103ms`，无 OOM/hs_err。 | ✅ |
+| 根因 | `AbstractPlayer.damage(DamageInfo)` 偏移 1107–1117：`new DeathScreen`/`getMonsters()`/`<init>(MonsterGroup)`/`putstatic AbstractDungeon.deathScreen`，构造值**只被 putstatic、从不解引用**；`DeathScreen.<init>` 字节码第一条外部调用就是 `new GameOverScreen()`，之后解锁/成就/`StatsScreen`/`SaveAndContinue.deleteSave`/`Prefs.flush`/`MusicMaster.playTempBgmInstantly`/`OverlayMenu.showBlackScreen`。`mirror/Statics.java:368-374` 只还原字段引用 ⇒ 挡显示不挡副作用。放大器：`docs/PLAN-BUGS.md:4180` 的 seen 无上限 + 128 克隆 World + `unlimitedBudget`，单回合 2 小时/48.9 万节点。 | ✅ |
+| 修法 | 新增 `src/main/java/sts1solver/mirror/DeathQuiet.java`：`@SpirePatch(clz=AbstractPlayer.class, method="damage", paramtypez={DamageInfo.class})` + `@SpireInstrumentPatch`，`ExprEditor.edit(NewExpr)` 只匹配 `screens.DeathScreen`，替换成 `if (quiet()) { noteSuppressed(); $_ = null; } else { $_ = $proceed($$); }`；`quiet()=World.anyInstalled()`；`EXPECTED_SITES=1`、计数写 System property、前 3 次记日志。判死仍走 `Driver.deadFrom(isDead, currentHealth)`（`drive/Driver.java:1560-1562`）。 | ✅ |
+| 代价 | +1 类约 150 行；运行时零开销；日志最多 3 行 `sandbox death: live DeathScreen skipped`。每个模拟致死省掉整条结算链 ⇒ 分配/GC 下降。 | ✅ 已写 PLAN-BUGS |
+| 风险 | 沙盒内 `AbstractDungeon.deathScreen` 恒 null（原版只在死亡界面存在时才走的代码不再触发）；其它 mod 的 `publishPostDeath` 等钩子不触发（本次 19 mod 已核对无"死亡钩子改战斗结果"者）；回滚 = 删该类。 | ✅ 已写 PLAN-BUGS |
+| 验证（离线） | 自写 javassist harness `_tmp/deathquiet/DeathQuietCheck.java`：同一 replace 文本 instrument `AbstractPlayer.damage` 后统计 ⇒ `rewritten=1 quietCalls=1 newDeathScreen=0 ctorCalls=0`。 | ✅ |
+| 构建 | `tools/build.ps1` 被执行策略挡住（`PSSecurityException`）⇒ 手工等价：JDK21 `--release 8` 编译 147 源文件到 `build/runs/build-manual-20261123-093613/classes`（564 entries），`jar.exe --create` ⇒ `mod/sts1-engine-solver.jar` 1,345,230 B；jar 内确认含 `DeathQuiet.class`/`DeathQuiet$1.class`/`DeathQuiet$Site01.class`。 | ✅ 未跑门禁（用户偏好自测） |
+| 安装 | 用户放行提权后覆盖成功：`D:\Steam\steamapps\common\SlayTheSpire\mods\sts1-engine-solver.jar` 1,345,230 B / 2026-11-23 17:37:27，sha256 `973681F822750D16A630EE74C430E012603FE98EDAC322243F9B99785AECD9D1`（与工作区 `mod\sts1-engine-solver.jar` 一致），jar 内含 `DeathQuiet.class` / `DeathQuiet$1.class` / `DeathQuiet$Site01.class`。 | ✅ 已安装 |
+| 版本 | `resources/ModTheSpire.json` 1.0.13（未升版）；创意工坊未动。 | — |
+| 文档 | PLAN-BUGS.md `## B214`、PLAN.md 状态表 B214 行、本表、SANDBOX-MECHANISMS.md、PLAN-ISOLATION.md。 | ✅ |
+| 实机验证 | 由用户自测：①求解会死人的战斗后 `Managing unlocks` 不增长；②`SlayTheSpire.log` 无 `screens.DeathScreen> PLAYTIME` 循环、`saves\<角色>.autosave` 不被删；③solver.log 出现 ≤3 行 `sandbox death: live DeathScreen skipped`；④面板/自动出牌不变。 | ⏳ 待实机 |

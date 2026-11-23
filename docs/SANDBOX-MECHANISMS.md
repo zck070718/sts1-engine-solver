@@ -50,6 +50,8 @@
 | M13 效果（药水/能力）的终态要在效果被丢弃前应用 | 引擎效果队列 | `mirror/EffectSettle.java` | S144 | ✅ |
 | M14 玩家真死就是死，回血不能把尸体拉起来 | `AbstractPlayer.isDead` | 死亡判定 | S110 | ✅ |
 
+| M53 沙盒里模拟致死**不许真造死亡界面**（B214） | `AbstractPlayer.damage(DamageInfo)` 偏移 1107–1117 `new DeathScreen(AbstractDungeon.getMonsters())` + `putstatic AbstractDungeon.deathScreen`（构造值只被赋字段、从不解引用）；`DeathScreen.<init>` 头一条外部调用即 `new GameOverScreen()`，随后解锁/成就/`StatsScreen`/`SaveAndContinue.deleteSave`（删真实存档）/`Prefs.flush`（同步写盘）/`MusicMaster.playTempBgmInstantly`/`OverlayMenu.showBlackScreen` | `mirror/DeathQuiet.java`：`@SpireInstrumentPatch` + `ExprEditor.edit(NewExpr)` 命中 `screens.DeathScreen` 时在 `World.anyInstalled()` 窗口内改成 `$_ = null`（`$proceed($$)` 只在窗口外走）；判死仍看 `isDead/currentHealth`（`drive/Driver.java:1560-1562`） | 无（用户 m00732 偏好自测；离线字节码验证 `rewritten=1 newDeathScreen=0`） | ✅ 已安装（sha256 973681F8…9D1），待实机 |
+
 ## D. 随机流
 
 | 机制 | 引擎依据 | 沙盒实现 | 门禁 | 状态 |
