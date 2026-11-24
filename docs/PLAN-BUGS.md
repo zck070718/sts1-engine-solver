@@ -5591,7 +5591,7 @@ src/main/java/sts1solver/drive/Driver.java：
 | 验收 | 用户自测（不跑门禁，m00732/m00300）：同一局面按计算，t2 计划应出现「防御」而不是直接结束回合；日志 `plan :` 之后的掉血应是真实净掉血。 | ⏳ |
 | 关联 | B215（剪枝/回放）——本 bug 与层宽无关：即使这条防御线被回放进 beam，旧代码仍判它与结束回合同分，**这是评分口径的错，不是搜索漏掉了它**。B146（局外收益计价）与 P2-35（`growthHp` 抵扣）——两者都建立在「抵扣后截断」的旧口径上，本次没有改它们的价目表，只让净值可以为负。 | ✅ |
 
-## B217 蕾忍打三个哨卫内存十几个 G：沙盒每次构造能力都新建图标纹理（user m00001/m00005/m00301，2026-11-24，**已实施，版本 1.0.17**）
+## B217 蕾忍打三个哨卫内存十几个 G：沙盒每次构造能力都新建图标纹理（user m00001/m00005/m00301，2026-11-24，**已实施并发布，版本 1.0.17**）
 
 | 项 | 内容 | 状态 |
 |---|---|---|
@@ -5607,6 +5607,7 @@ src/main/java/sts1solver/drive/Driver.java：
 | 风险 | ①若某个 mod 自己 dispose 了从 `loadImage` 拿到的纹理，缓存会交出已失效对象——当前安装的 mod（ninja/CaiNongMod/TheNecrobinderPlus/loadout/mintySpire/NpcFeminization/FeminizationModSFW/NinjaSkin）无此用法；②GL 上下文丢失（如驱动重置）后缓存纹理失效，与 B201 同类边界；③回滚＝删除 `mirror/SandboxImage.java`（patch 类不被加载即无行为），`Solver.java` 那句日志独立可留。 | ✅ |
 | 对 mod 的实际影响 | 面板输出与自动出牌逻辑不变（图标内容相同，仍是同一张 PNG）；搜索语义不变；`条/s` 应略升（省掉每秒数百次解码+GL 上传）；其它 mod 兼容性不变，未触碰镜像/Driver/Digest。实机路径一行不改。 | ✅ |
 | 构建/安装 | `tools/build.ps1` BUILD OK（JDK 21.0.11、`--release 8`、148 源文件、571 entries）→ `mod\\sts1-engine-solver.jar` **1,339,234 B**，sha256 `7108A13F5F1C5C0816D6E793E0C69F06F1CB5F0F40308A6D7337B446E3D63EFB`；`tools/install.ps1 -SkipBuild` INSTALL OK（同 hash，装到 `D:\\Steam\\steamapps\\common\\SlayTheSpire\\mods`，jar 内含 `SandboxImage`/`SandboxImage$LoadPatch`/`SandboxImage$LoadFilteredPatch` 三个 class 与 `"version":"1.0.17"` 的 ModTheSpire.json）。 | ✅ |
+| 发布 | 2026-11-24 13:13 工坊 `mod-uploader.jar upload` → `Successfully updated workshop item!`（条目 3839053516；暂存 `D:\mods-workshop\sts1-engine-solver`，`config.json` GBK/936 无 BOM 5091 B、备份 `config.json.bak-20261124b`，description 当前版本→1.0.17、changeNote 换 1.0.17 文案）；GitHub `c0b704f` 推 `origin/master`（`PUSH OK`）。仅发布，未跑门禁，验收仍由用户实机做。 | ✅ |
 | 未做（等实测） | ①堆外资源兜底阈值（进程提交/GL 字节到线即停并如实报错）——用户未批准，按「无实测证据不预先加固」暂缓；②其它 mod 自建 `TextureLoader`/`new Pixmap` 路径——本次清点无每节点调用，等真出现按同模板加 hook。 | ⏳ |
 | 验收 | 用户自测（不跑门禁，m00732/m00300）：同场蕾忍三哨卫，看任务管理器 java.exe 提交稳在 2GB 内、日志 `sandbox image: reused` 随世界线增长而 `distinct` 停在两三百、`条/s` 是否上升；不应再出现 `TextureRegion.setRegion` 的 NPE。 | ⏳ |
 | 关联 | B201（另一条纹理泄漏：`loadAnimation` 的 TextureAtlas，登记-dispose）；B214（死亡界面链，无关）；B216（净值评分，无关）。 | ✅ |

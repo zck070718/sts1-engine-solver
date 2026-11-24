@@ -3191,7 +3191,10 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 对 mod 的影响 | 图标内容不变、面板与自动出牌不变；`条/s` 略升；实机路径零改动 | ✅ |
 | 构建 | `tools/build.ps1` exit 0（JDK 21.0.11、`--release 8`、148 源文件、571 entries）→ `mod\sts1-engine-solver.jar` **1,339,234 B**，sha256 `7108A13F5F1C5C0816D6E793E0C69F06F1CB5F0F40308A6D7337B446E3D63EFB` | ✅ |
 | 安装 | `tools/install.ps1 -SkipBuild` INSTALL OK（同 hash，装到 `D:\Steam\steamapps\common\SlayTheSpire\mods`）；jar 内含 `SandboxImage` 三个 class 与 `"version":"1.0.17"` | ✅ |
-| 版本 | `resources/ModTheSpire.json` → `1.0.17`（只构建安装，**未上传工坊、未推 GitHub**，等实机验收） | ⏳ |
+| 版本 | `resources/ModTheSpire.json` → `1.0.17`；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行 + 1.0.17 bullet（并把 1.0.17 条目置顶） | ✅ |
+| 发布 | 工坊暂存 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` 换 1.0.17（同 hash）；`config.json`（GBK/936 无 BOM，备份 `config.json.bak-20261124b`，5091 B）description「当前版本」→ 1.0.17、changeNote 换 1.0.17 文案；`mod-uploader.jar upload` 输出 `Successfully updated workshop item!`（2026-11-24 13:13） | ✅ 3839053516 |
+| 上传踩坑 | 本次 Steam 已在运行；仍是无控制台时会 `cmd /k` 重启自身 ⇒ 沿用 `AllocConsole()` + `Start-Process -RedirectStandardOutput -NoNewWindow` 拿日志（stdout 有成功行，stderr 有 `This program isn't launched in a console. Relaunching with a console...`，属正常） | ✅ |
+| GitHub | commit `c0b704f`（B217: cache ImageMaster.loadImage textures inside sandbox windows …; release 1.0.17，7 files changed/254+/3−），`tools/push-github.ps1` → `PUSH OK`，`origin/master` = c0b704f（未用代理） | ✅ |
 | 验收 | 用户自测（不跑门禁，m00732/m00300）：同场蕾忍三哨卫，java.exe 提交应稳在 2GB 内、`sandbox image: reused` 增长而 `distinct` 停在两三百、`条/s` 略升、不再出现 `TextureRegion.setRegion` NPE | ⏳ |
 | 未做 | 堆外兜底阈值（未批准）；其它 mod 自建 `TextureLoader`/`new Pixmap` 路径（本次清点无每节点调用） | ⏳ |
 
