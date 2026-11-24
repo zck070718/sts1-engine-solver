@@ -3174,3 +3174,25 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 验收 | 用户自测（不跑门禁，m00732/m00300）：同局面按计算，t2 计划应出现「防御」；日志掉血应为真实净值 | ⏳ |
 
 文档：`docs/PLAN-BUGS.md` 末尾 `## B216` 全细节；`docs/PLAN.md` 板块表 B216 行（并顺带订正 B215 行「已构建 1.0.15（待安装实机）」→ 已发布、B211 行「已构建安装 1.0.11（待实机）」→ 后续版本已接续）。
+
+## B217 蕾忍打三个哨卫内存十几个 G：每节点新建图标纹理（2026-11-24，user m00001/m00005/m00301；版本 1.0.17）
+
+用户问：蕾忍打三哨卫，日志里内存十几 G，是不是拜蛇术士/死亡画面（B214）或最近的 max 改动（B216）造成的，定位到具体函数并给方案，先别动手。
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 决定 | 先给结论、等用户拍板：用户 m00301「做前者」= 缓存复用、永不 dispose；兜底阈值未批准，不做 | ✅ |
+| 定位 | `ImageMaster.loadImage` 无缓存（`new Texture` 每次解码上传） × mod 能力构造函数每实例化一次建 2 张图标（`ninja.jar powers.LexKela.<init>` offset 49–96 字节码证据）；共 72 个调用点（ninja 40 类、菜农 30 类、死灵 2 类）全走该方法 ⇒ 单一收口点 | ✅ |
+| 排除 | B214 无关（堆全程平、`sandbox death: live DeathScreen skipped` 正常）；B216 无关（零分配算术）；B201 覆盖不到（只 hook `loadAnimation`，当日 `sandbox art` 0 条） | ✅ |
+| 数字 | 436 条/s × 2 × 32KB ≈ 13.8MB/s；实测 24.5GB/1905s = 13.5MB/s；Windows 事件 2004：26,302,455,808B@10:05、37,688,893,440B@00:25；Java 堆峰值 2766MB、崩时 1.2GB ⇒ 全在堆外 | ✅ |
+| 代码 | 新增 `src/main/java/sts1solver/mirror/SandboxImage.java`（两个重载各一组 prefix+postfix，`SpireReturn` 短路，`World.anyInstalled()` 门控，1024 张/192MB 上限，缓存永不 dispose，诊断行 `sandbox image: reused/distinct/kept/refused`）；`Solver.java:4933` 假文案改成 `tier cap` / `memory guard: heap XMB, limit YMB` | ✅ |
+| 代价 | 每节点 2 次 HashMap 查找；常驻最多 1024 张/192MB；构建 148 源文件 / 571 entries / 1,339,234 B | ✅ |
+| 风险 | mod 自行 dispose 缓存纹理会交失效对象（当前 8 个 mod 无此用法）；GL 上下文丢失后纹理失效（与 B201 同类边界）；回滚＝删 `SandboxImage.java` | ✅ |
+| 对 mod 的影响 | 图标内容不变、面板与自动出牌不变；`条/s` 略升；实机路径零改动 | ✅ |
+| 构建 | `tools/build.ps1` exit 0（JDK 21.0.11、`--release 8`、148 源文件、571 entries）→ `mod\sts1-engine-solver.jar` **1,339,234 B**，sha256 `7108A13F5F1C5C0816D6E793E0C69F06F1CB5F0F40308A6D7337B446E3D63EFB` | ✅ |
+| 安装 | `tools/install.ps1 -SkipBuild` INSTALL OK（同 hash，装到 `D:\Steam\steamapps\common\SlayTheSpire\mods`）；jar 内含 `SandboxImage` 三个 class 与 `"version":"1.0.17"` | ✅ |
+| 版本 | `resources/ModTheSpire.json` → `1.0.17`（只构建安装，**未上传工坊、未推 GitHub**，等实机验收） | ⏳ |
+| 验收 | 用户自测（不跑门禁，m00732/m00300）：同场蕾忍三哨卫，java.exe 提交应稳在 2GB 内、`sandbox image: reused` 增长而 `distinct` 停在两三百、`条/s` 略升、不再出现 `TextureRegion.setRegion` NPE | ⏳ |
+| 未做 | 堆外兜底阈值（未批准）；其它 mod 自建 `TextureLoader`/`new Pixmap` 路径（本次清点无每节点调用） | ⏳ |
+
+文档：`docs/PLAN-BUGS.md` 末尾 `## B217` 全细节（并在 `## B201` 标题下加了一行指向 B217 的缺口说明）；`docs/PLAN.md` 板块表 B217 行。

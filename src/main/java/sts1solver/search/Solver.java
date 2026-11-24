@@ -4932,7 +4932,14 @@ public final class Solver {
                 }
                 if (beam != this.beamWidth && !this.guardLogged) {
                     this.guardLogged = true;
-                    Log.info("memory guard: beam " + this.beamWidth + " -> " + beam + " (heap " + Solver.heapUsedMb() + "MB over limit " + Solver.effectiveHeapLimitMb() + "MB)");
+                    // B217: this line used to say "over limit" whenever the beam changed, even when
+                    // the only thing that narrowed it was the beam tier. Report the cause that is
+                    // actually in force, so a log reader can tell a heap guard from a profile cap.
+                    int tier = Limits.beam();
+                    String why = tier < this.beamWidth
+                            ? "tier cap " + tier
+                            : "memory guard: heap " + Solver.heapUsedMb() + "MB, limit " + Solver.effectiveHeapLimitMb() + "MB";
+                    Log.info("beam " + this.beamWidth + " -> " + beam + " (" + why + ")");
                 }
                 for (int i = n = Math.min(this.bandOffset, arrayList.size()); i < arrayList.size() && arrayList2.size() < beam; ++i) {
                     arrayList2.add((Node)arrayList.get(i));
