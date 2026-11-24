@@ -164,7 +164,16 @@ public final class SandboxImage {
     /**
      * {@code ImageMaster.loadImage(String)}: hand back the window's texture when it already has one.
      * A returned {@code SpireReturn} skips the body (no PNG decode, no GL upload); otherwise the body
-     * runs and {@link RecordPatch} remembers what it built.
+     * runs and the postfix below remembers what it built.
+     *
+     * <p>B218 (user m00461): the postfix has to <em>return</em> {@code __result}, it cannot be
+     * {@code void}. ModTheSpire 3.30.3 only treats the first patch parameter as the result ({@code
+     * $_}) when the patch method's return type is non-void and equals that parameter's type; a void
+     * postfix makes {@code __result} eat the target's first real parameter and every later parameter
+     * shift by one, which ends in {@code PatchingException: Illegal patch parameter: Cannot determine
+     * name} and aborts the whole mod load (the game never starts). Returning the same texture keeps
+     * the behaviour identical -- MTS rewrites each return of the target into {@code return (Texture)
+     * postfix($_, ...)}.
      */
     @SpirePatch(clz = ImageMaster.class, method = "loadImage", paramtypez = {String.class})
     public static final class LoadPatch {
@@ -175,8 +184,9 @@ public final class SandboxImage {
         }
 
         @SpirePostfixPatch
-        public static void postfix(Texture __result, String file) {
+        public static Texture postfix(Texture __result, String file) {
             record(file, false, __result);
+            return __result;
         }
     }
 
@@ -191,8 +201,9 @@ public final class SandboxImage {
         }
 
         @SpirePostfixPatch
-        public static void postfix(Texture __result, String file, boolean flag) {
+        public static Texture postfix(Texture __result, String file, boolean flag) {
             record(file, flag, __result);
+            return __result;
         }
     }
 }

@@ -3199,3 +3199,21 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 未做 | 堆外兜底阈值（未批准）；其它 mod 自建 `TextureLoader`/`new Pixmap` 路径（本次清点无每节点调用） | ⏳ |
 
 文档：`docs/PLAN-BUGS.md` 末尾 `## B217` 全细节（并在 `## B201` 标题下加了一行指向 B217 的缺口说明）；`docs/PLAN.md` 板块表 B217 行。
+
+## B218 装 1.0.17 后无法启动游戏：MTS 经典 @SpirePatch 的 postfix 必须返回 __result（2026-11-24；版本 1.0.18）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 决定 | 用户 m00461 明确「不要改动只找问题」⇒ 本轮先只定位并给方案（A：postfix 改返回值；B：迁 @SpirePatch2；C：绕过，否决），m00583 批准方案 A 并要发布 | ✅ |
+| 定位 | `sendToDevs/mts_process_launch.log` 16:42：`Patch Class: [sts1solver.mirror.SandboxImage$LoadFilteredPatch]` → `Adding Postfix...` → `PatchingException: Illegal patch parameter: Cannot determine name`（`PostfixParamTransformer.getParamName:96` ← `Patcher.finalizePatches:318` ← `Loader.runMods:443`）；根因是 1.0.17 两个 `void postfix(Texture __result, …)`，MTS 只在 postfix 返回类型非 void 且等于首参类型时才把首参当 `$_`，void 时 `__result` 吃掉目标第一个实参、参数整体错位、最后一个越界 | ✅ |
+| 实证 | javap 读 MTS 3.30.3 `ParamInfo`/`ParamTransformer`/`PostfixParamTransformer`/`ParameterPatchInfo.doPatch`/`PostfixPatchInfo.alterSrc`；扫 21 个工坊 jar：36 个 `__result` 方法全是「非 void + return __result」，唯一 void 的是 StSLib 的 `@SpirePatch2`（走 ParamInfo2） | ✅ |
+| 代码 | `mirror/SandboxImage.java`：`public static void postfix(Texture __result, String file)` → `public static Texture postfix(…){ record(…); return __result; }`，2 参重载同样改；类注释加 B218 段说明 `$_` 规则 | ✅ |
+| 代价 | 零额外运行时成本；jar +5 B（1,339,234 → 1,339,239） | ✅ |
+| 风险 | `record()` 进到返回路径，但 `try/catch Throwable` 且不改变返回值；MTS 升级若改规则需重核；回滚＝改回 void（即复现本次崩溃） | ✅ |
+| 对 mod 的影响 | 与 1.0.17 设计一致（图标复用、实机零改动、面板/自动出牌不变），差别只是游戏能启动 | ✅ |
+| 构建/安装 | `tools/build.ps1` BUILD OK（148 源文件、571 entries）→ 1,339,239 B、sha256 `48234C2F91FD4C65D7565059D1318915FE81A33680398F8EA0696E0D52CCD5AE`；`javap -p` 复核 postfix 返回 `Texture`；`tools/install.ps1 -SkipBuild` INSTALL OK | ✅ |
+| 版本 | `resources/ModTheSpire.json` 1.0.17 → **1.0.18**；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行与 1.0.18 bullet | ✅ |
+| 未做 | 构建期「patch 签名符合 MTS 规则」的静态校验（未批准）；未跑门禁（用户自测，m00732/m00300） | ⏳ |
+| 验收 | 用户自测：点 Play 能进主菜单、无 `PatchingException`；进战斗看 `sandbox image: reused` 增长、`distinct` 停在两三百 | ⏳ |
+
+文档：`docs/PLAN-BUGS.md` 末尾 `## B218` 全细节；`docs/PLAN.md` 板块表新增 B218 行，并把 B217 行状态改为「1.0.17 起不来，已被 1.0.18 取代」。
