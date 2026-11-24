@@ -5628,6 +5628,7 @@ src/main/java/sts1solver/drive/Driver.java：
 | 风险 | ①若 MTS 未来版本改变 `$_` 判定规则，需重新对照 `PostfixParamTransformer`（规则已写进类注释）；②`record()` 现在处在目标方法的返回路径上，但它 `try/catch Throwable` 且不改变返回值，风险等同原 postfix；③回滚 = 两个 postfix 改回 void，即精确复现本次起不来，不会产生第三种失败形态。 | ✅ |
 | 对 mod 的实际影响 | 与 1.0.17 完全一致：窗口内同一图标复用、实机路径零改动、面板与自动出牌不变；区别只是补丁能被 MTS 正确应用，游戏能启动。 | ✅ |
 | 构建/安装 | `tools/build.ps1` BUILD OK（JDK 21.0.11、`--release 8`、148 源文件、571 entries）→ `mod\sts1-engine-solver.jar` **1,339,239 B**、sha256 `48234C2F91FD4C65D7565059D1318915FE81A33680398F8EA0696E0D52CCD5AE`；`javap -p` 复核编译结果 `public static com.badlogic.gdx.graphics.Texture postfix(com.badlogic.gdx.graphics.Texture, java.lang.String[, boolean])`；`tools/install.ps1 -SkipBuild` INSTALL OK（同 hash，装到 `D:\Steam\steamapps\common\SlayTheSpire\mods`），jar 内 `"version":"1.0.18"`。 | ✅ |
+| 发布 | 2026-11-24 18:37 工坊 `Successfully updated workshop item!`（条目 3839053516，content jar 同 hash，config.json GBK/936 无 BOM 4902 B）；GitHub `1631970` 推 `origin/master`（`PUSH OK`）。 | ✅ |
 | 未做 | 没有「补丁签名能被 MTS 接受」的自动化检查（MTS 只在真实加载 mod 时校验，命令行无法单独跑）。本轮以「与 36 个 BaseMod 实例同构」+ 字节码规则推导作判据，真正验收是用户点一次 Play。若以后要门禁，可做构建期「按 MTS 规则静态校验 patch 方法签名」的检查（未批准，不做）。 | ⏳ |
 | 验收 | 用户自测：点 MTS 的 Play 能进主菜单（不再出现 `PatchingException`）；进战斗后看 `sandbox image: reused` 增长、`distinct` 停在两三百。 | ⏳ |
 | 关联 | B217（本 bug 的引入者：1.0.17 新增 `SandboxImage`，是唯一使用 `__result` 的新代码）；B214/B216 无关。 | ✅ |

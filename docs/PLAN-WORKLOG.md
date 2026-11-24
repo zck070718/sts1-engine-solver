@@ -3213,6 +3213,9 @@ user m00005「查看最新日志，分析内存占用过大的原因」→ m0043
 | 对 mod 的影响 | 与 1.0.17 设计一致（图标复用、实机零改动、面板/自动出牌不变），差别只是游戏能启动 | ✅ |
 | 构建/安装 | `tools/build.ps1` BUILD OK（148 源文件、571 entries）→ 1,339,239 B、sha256 `48234C2F91FD4C65D7565059D1318915FE81A33680398F8EA0696E0D52CCD5AE`；`javap -p` 复核 postfix 返回 `Texture`；`tools/install.ps1 -SkipBuild` INSTALL OK | ✅ |
 | 版本 | `resources/ModTheSpire.json` 1.0.17 → **1.0.18**；`docs/WORKSHOP-DESCRIPTION.md` 当前版本行与 1.0.18 bullet | ✅ |
+| 发布 | 2026-11-24 18:37 工坊 `mod-uploader.jar upload` → `Successfully updated workshop item!`（条目 3839053516；暂存 `D:\mods-workshop\sts1-engine-solver`：`content\sts1-engine-solver.jar` = 1,339,239 B / sha256 `48234C2F…D5AE`，`config.json` GBK/936 无 BOM 4902 B、备份 `config.json.bak-20261124c`，description 当前版本→1.0.18、那句过时的「每个窗口结束统一回收贴图」改成「同一张只解码一次、会话内复用（上限 1024 张/192MB）」，changeNote 换 1.0.18 文案） | ✅ |
+| 上传踩坑 | 第一次在 `run_code` 里同步等上传，被 120s 执行预算杀掉（18:31:39 断在 `UploadingContent`，无成功行）⇒ 改为后台 job 重传才拿到成功行；`AllocConsole()` + `Start-Process -RedirectStandardOutput/-RedirectStandardError -NoNewWindow` 仍必需（stdout 有成功行，stderr 是 `cmd` 重拉日志） | ✅ |
+| GitHub | commit `1631970`（B218: return __result from the classic @SpirePatch postfixes…，6 files changed/59+/6−），`tools/push-github.ps1` → `PUSH OK`（`c860b5f..1631970 master -> master`） | ✅ |
 | 未做 | 构建期「patch 签名符合 MTS 规则」的静态校验（未批准）；未跑门禁（用户自测，m00732/m00300） | ⏳ |
 | 验收 | 用户自测：点 Play 能进主菜单、无 `PatchingException`；进战斗看 `sandbox image: reused` 增长、`distinct` 停在两三百 | ⏳ |
 
